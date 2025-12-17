@@ -2,6 +2,7 @@
 data/ 
 outputs/
 .DS_store
+jfuse-example-data-v0.1.0.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

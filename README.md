@@ -23,6 +23,7 @@ A fully differentiable JAX implementation of the Framework for Understanding Str
 
 ```bash
 # Clone or download the package
+git clone https://github.com/DarriEy/jFUSE.git
 cd jfuse
 
 # Install in development mode

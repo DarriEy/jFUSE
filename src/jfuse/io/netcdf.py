@@ -138,25 +138,28 @@ def _get_variable(ds, names: List[str]):
 
 def load_network(
     filepath: str,
-    reach_id_var: str = "reach_id",
-    downstream_var: str = "downstream_id",
-    length_var: str = "length",
-    slope_var: str = "slope",
-    manning_var: str = "manning_n",
-    area_var: str = "area",
-    hru_id_var: str = "hru_id",
+    reach_id_var: str = None,
+    downstream_var: str = None,
+    length_var: str = None,
+    slope_var: str = None,
+    manning_var: str = None,
+    area_var: str = None,
+    hru_id_var: str = None,
 ) -> Tuple[RiverNetwork, Array]:
     """Load river network from NetCDF file.
     
+    Supports both jFUSE-style and mizuRoute-style variable naming conventions.
+    If variable names are not specified, attempts to auto-detect from the file.
+    
     Args:
         filepath: Path to network NetCDF file
-        reach_id_var: Variable name for reach IDs
-        downstream_var: Variable name for downstream reach IDs
-        length_var: Variable name for reach lengths
-        slope_var: Variable name for bed slopes
-        manning_var: Variable name for Manning's n
-        area_var: Variable name for contributing areas
-        hru_id_var: Variable name for HRU IDs
+        reach_id_var: Variable name for reach IDs (auto: reach_id, segId)
+        downstream_var: Variable name for downstream reach IDs (auto: downstream_id, downSegId)
+        length_var: Variable name for reach lengths (auto: length)
+        slope_var: Variable name for bed slopes (auto: slope)
+        manning_var: Variable name for Manning's n (auto: manning_n, n)
+        area_var: Variable name for contributing areas (auto: area)
+        hru_id_var: Variable name for HRU IDs (auto: hru_id, hruId)
         
     Returns:
         Tuple of (RiverNetwork, hru_areas)
@@ -166,30 +169,77 @@ def load_network(
     
     if HAS_XARRAY:
         ds = xr.open_dataset(filepath)
-        
+        var_names = list(ds.data_vars)
+    else:
+        ds = nc4.Dataset(filepath, 'r')
+        var_names = list(ds.variables.keys())
+    
+    # Auto-detect variable names if not specified
+    def find_var(options, required=True):
+        """Find first matching variable name from options list."""
+        for opt in options:
+            if opt in var_names:
+                return opt
+        if required:
+            raise KeyError(f"Could not find any of {options} in {var_names}")
+        return None
+    
+    # Reach ID: reach_id (jFUSE), segId (mizuRoute)
+    if reach_id_var is None:
+        reach_id_var = find_var(['reach_id', 'segId', 'seg_id', 'reachId', 'COMID'])
+    
+    # Downstream ID: downstream_id (jFUSE), downSegId (mizuRoute)
+    if downstream_var is None:
+        downstream_var = find_var(['downstream_id', 'downSegId', 'down_seg_id', 'tosegment', 'toSegment', 'NextDownID'])
+    
+    # Length
+    if length_var is None:
+        length_var = find_var(['length', 'Length', 'seg_length', 'LENGTHKM'])
+    
+    # Slope
+    if slope_var is None:
+        slope_var = find_var(['slope', 'Slope', 'seg_slope', 'So'])
+    
+    # Manning's n (optional)
+    if manning_var is None:
+        manning_var = find_var(['manning_n', 'n', 'Mann_n', 'roughness'], required=False)
+    
+    # Area (optional but commonly available)
+    if area_var is None:
+        area_var = find_var(['area', 'Area', 'hruArea', 'basin_area', 'TotDASqKM'], required=False)
+    
+    # HRU ID (optional)
+    if hru_id_var is None:
+        hru_id_var = find_var(['hru_id', 'hruId', 'hru_to_seg', 'hruToSegId'], required=False)
+    
+    # Read variables
+    if HAS_XARRAY:
         reach_ids = ds[reach_id_var].values
         downstream_ids = ds[downstream_var].values
         lengths = ds[length_var].values
         slopes = ds[slope_var].values
         
-        manning_n = ds[manning_var].values if manning_var in ds else None
-        areas = ds[area_var].values if area_var in ds else None
-        hru_ids = ds[hru_id_var].values if hru_id_var in ds else None
+        manning_n = ds[manning_var].values if manning_var and manning_var in ds else None
+        areas = ds[area_var].values if area_var and area_var in ds else None
+        hru_ids = ds[hru_id_var].values if hru_id_var and hru_id_var in ds else None
         
         ds.close()
     else:
-        ds = nc4.Dataset(filepath, 'r')
-        
         reach_ids = ds.variables[reach_id_var][:]
         downstream_ids = ds.variables[downstream_var][:]
         lengths = ds.variables[length_var][:]
         slopes = ds.variables[slope_var][:]
         
-        manning_n = ds.variables[manning_var][:] if manning_var in ds.variables else None
-        areas = ds.variables[area_var][:] if area_var in ds.variables else None
-        hru_ids = ds.variables[hru_id_var][:] if hru_id_var in ds.variables else None
+        manning_n = ds.variables[manning_var][:] if manning_var and manning_var in ds.variables else None
+        areas = ds.variables[area_var][:] if area_var and area_var in ds.variables else None
+        hru_ids = ds.variables[hru_id_var][:] if hru_id_var and hru_id_var in ds.variables else None
         
         ds.close()
+    
+    # Handle length units - mizuRoute uses km, we need m
+    if 'km' in length_var.lower() or np.nanmean(lengths) < 100:
+        # Likely in km, convert to m
+        lengths = lengths * 1000.0
     
     # Create network
     network = create_network_from_topology(

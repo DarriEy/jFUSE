@@ -22,6 +22,7 @@ class FileManagerConfig:
         output_path: Path for output files
         suffix_forcing: Suffix for forcing files (appended to basin_id)
         suffix_elev_bands: Suffix for elevation bands file
+        suffix_network: Suffix for network topology file
         forcing_info_file: Name of forcing info file
         constraints_file: Name of parameter constraints file
         numerix_file: Name of numerical solution file
@@ -47,6 +48,7 @@ class FileManagerConfig:
     # File suffixes
     suffix_forcing: str = "_input.nc"
     suffix_elev_bands: str = "_elev_bands.nc"
+    suffix_network: str = "_network.nc"
     
     # Settings files
     forcing_info_file: str = "input_info.txt"
@@ -101,6 +103,10 @@ class FileManagerConfig:
     def elev_bands_file(self, basin_id: str) -> Path:
         """Get elevation bands file path for a basin."""
         return self.input_path / f"{basin_id}{self.suffix_elev_bands}"
+    
+    def network_file(self, basin_id: str) -> Path:
+        """Get network topology file path for a basin."""
+        return self.input_path / f"{basin_id}{self.suffix_network}"
     
     def output_file(self, suffix: str = "_output.nc") -> Path:
         """Get output file path."""

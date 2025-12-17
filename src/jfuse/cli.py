@@ -205,6 +205,7 @@ def run_simulation(
     fm_config: 'FileManagerConfig',
     basin_id: str,
     verbose: bool = True,
+    network_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a jFUSE simulation.
     
@@ -212,12 +213,14 @@ def run_simulation(
         fm_config: File manager configuration
         basin_id: Basin identifier
         verbose: Print progress messages
+        network_path: Path to network topology file (overrides default naming)
         
     Returns:
         Dictionary with simulation results
     """
     from jfuse import FUSEModel
     from jfuse.fuse import FUSEConfig
+    from jfuse.fuse.config import RoutingType
     from jfuse.io.filemanager import ForcingInfo, parse_forcing_info
     
     if verbose:
@@ -253,23 +256,93 @@ def run_simulation(
         fm_config.date_end_sim,
     )
     
-    # Detect number of HRUs from forcing shape
+    # Detect number of HRUs and spatial mode
     if precip.ndim == 1:
         n_hrus = 1
         is_distributed = False
     else:
         n_hrus = precip.shape[1]
-        is_distributed = True
+        is_distributed = n_hrus > 1  # Only distributed if MORE than 1 HRU
+        
+        # If only 1 HRU but 2D array, squeeze to 1D (lumped)
+        if n_hrus == 1:
+            precip = precip.squeeze(-1)
+            pet = pet.squeeze(-1)
+            temp = temp.squeeze(-1)
     
-    # Create model
-    model = FUSEModel(config, n_hrus=n_hrus)
+    # Check if CHANNEL routing should be enabled
+    # Channel routing requires: distributed mode + network file exists
+    # Q_TDH (hillslope routing) is handled internally by FUSE
+    use_channel_routing = False
+    if network_path:
+        network_file = Path(network_path)
+    else:
+        network_file = fm_config.network_file(basin_id)
     
-    # Initialize params and state with correct shape
-    from jfuse.fuse.state import State, Parameters
-    params = Parameters.default(n_hrus=n_hrus)
-    state = State.default(n_hrus=n_hrus)
+    if is_distributed:
+        network_exists = network_file.exists()
+        
+        if network_exists:
+            use_channel_routing = True
+            if verbose:
+                print(f"\nNetwork file found: {network_file}")
+        else:
+            if verbose:
+                print(f"\n  No network file found - using area-weighted HRU aggregation")
+    
+    # Create model based on spatial mode
+    if use_channel_routing:
+        # Use CoupledModel for FUSE + Muskingum-Cunge channel routing
+        from jfuse.coupled import CoupledModel, CoupledParams
+        from jfuse.io import load_network
+        
+        if verbose:
+            print(f"Loading network topology from: {network_file}")
+        
+        try:
+            network, hru_areas = load_network(str(network_file))
+        except KeyError as e:
+            print(f"  ERROR: Could not load network file: {e}")
+            print(f"  Falling back to area-weighted HRU aggregation")
+            use_channel_routing = False
+        except Exception as e:
+            print(f"  ERROR: Failed to load network: {e}")
+            print(f"  Falling back to area-weighted HRU aggregation")
+            use_channel_routing = False
+    
+    if use_channel_routing:
+        # Check HRU count matches
+        if len(network.reaches) != n_hrus:
+            if verbose:
+                print(f"  WARNING: Network has {len(network.reaches)} reaches but forcing has {n_hrus} HRUs")
+                print(f"  Using min({len(network.reaches)}, {n_hrus}) for simulation")
+        
+        model = CoupledModel(
+            fuse_config=config,
+            network=network.to_arrays(),
+            hru_areas=hru_areas,
+            n_hrus=n_hrus,
+        )
+        
+        params = model.default_params()
+        initial_state = None  # CoupledModel will create default
+        
+        if verbose:
+            print(f"  Reaches: {len(network.reaches)}")
+            print(f"  Channel routing: Muskingum-Cunge")
+    else:
+        # Use FUSEModel only (no channel routing)
+        model = FUSEModel(config, n_hrus=n_hrus)
+        
+        # Initialize params and state with correct shape
+        from jfuse.fuse.state import State, Parameters
+        params = Parameters.default(n_hrus=n_hrus)
+        initial_state = State.default(n_hrus=n_hrus)
     
     forcing = (precip, pet, temp)
+    
+    # Determine hillslope routing type from config
+    hillslope_routing = "gamma" if config.routing == RoutingType.GAMMA else "none"
     
     if verbose:
         print(f"  Variables found: pr={found_vars['precip']}, pet={found_vars['pet']}, temp={found_vars['temp']}, obs={found_vars['obs']}")
@@ -277,8 +350,14 @@ def run_simulation(
         print(f"  Timesteps: {len(times)}")
         if is_distributed:
             print(f"  HRUs: {n_hrus} (distributed mode)")
+            print(f"  Hillslope routing (Q_TDH): {hillslope_routing}")
+            if use_channel_routing:
+                print(f"  Channel routing: Muskingum-Cunge")
+            else:
+                print(f"  Channel routing: none (area-weighted aggregation)")
         else:
             print(f"  Mode: lumped")
+            print(f"  Hillslope routing (Q_TDH): {hillslope_routing}")
         print(f"  Mean precip: {float(jnp.nanmean(precip)):.2f} mm/day")
         print(f"  Mean PET: {float(jnp.nanmean(pet)):.2f} mm/day")
         print(f"  Mean temp: {float(jnp.nanmean(temp)):.1f} °C")
@@ -293,7 +372,18 @@ def run_simulation(
         print(f"\nRunning simulation...")
     
     t0 = time.time()
-    runoff, final_state = model.simulate(forcing, params, state)
+    
+    if use_channel_routing:
+        # CoupledModel returns (runoff_hru, Q_outlet)
+        runoff_hru, Q_outlet = model.simulate(forcing, params, initial_state)
+        # For metrics, use outlet discharge (convert from m³/s to mm/day if needed)
+        # Q_outlet is in m³/s, need to compare with obs which is in mm/day
+        # For now, use runoff_hru aggregated
+        runoff = runoff_hru
+        final_state = None
+    else:
+        runoff, final_state = model.simulate(forcing, params, initial_state)
+    
     elapsed = time.time() - t0
     
     if verbose:
@@ -301,6 +391,8 @@ def run_simulation(
         print(f"  Mean runoff: {float(jnp.nanmean(runoff)):.2f} mm/day")
         if runoff.ndim > 1:
             print(f"  Runoff shape: {runoff.shape} (time, hru)")
+        if use_channel_routing:
+            print(f"  Outlet Q range: {float(Q_outlet.min()):.2f} - {float(Q_outlet.max()):.2f} m³/s")
     
     # Compute metrics if observations available
     metrics = {}
@@ -398,6 +490,7 @@ def run_calibration(
     basin_id: str,
     method: str = 'gradient',
     verbose: bool = True,
+    network_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run jFUSE calibration.
     
@@ -406,12 +499,14 @@ def run_calibration(
         basin_id: Basin identifier
         method: Calibration method ('gradient' or 'sce')
         verbose: Print progress messages
+        network_path: Path to network topology file (overrides default naming)
         
     Returns:
         Dictionary with calibration results
     """
     from jfuse import FUSEModel
     from jfuse.fuse import FUSEConfig
+    from jfuse.fuse.config import RoutingType
     from jfuse.optim import Calibrator, CalibrationConfig
     from jfuse.io.filemanager import ForcingInfo, parse_forcing_info
     
@@ -443,14 +538,77 @@ def run_calibration(
         fm_config.date_end_sim,
     )
     
-    # Detect number of HRUs from forcing shape
+    # Detect number of HRUs and spatial mode
     if precip.ndim == 1:
         n_hrus = 1
+        is_distributed = False
     else:
         n_hrus = precip.shape[1]
+        is_distributed = n_hrus > 1  # Only distributed if MORE than 1 HRU
+        
+        # If only 1 HRU but 2D array, squeeze to 1D (lumped)
+        if n_hrus == 1:
+            precip = precip.squeeze(-1)
+            pet = pet.squeeze(-1)
+            temp = temp.squeeze(-1)
     
-    # Create model with correct n_hrus
-    model = FUSEModel(config, n_hrus=n_hrus)
+    # Check if CHANNEL routing should be enabled
+    use_channel_routing = False
+    if network_path:
+        network_file = Path(network_path)
+    else:
+        network_file = fm_config.network_file(basin_id)
+    
+    if is_distributed:
+        network_exists = network_file.exists()
+        
+        if network_exists:
+            use_channel_routing = True
+        else:
+            if verbose:
+                print(f"\n  No network file found - calibrating with area-weighted HRU aggregation")
+    
+    # Determine hillslope routing type from config
+    hillslope_routing = "gamma" if config.routing == RoutingType.GAMMA else "none"
+    
+    if use_channel_routing:
+        # Use CoupledModel for FUSE + Muskingum-Cunge channel routing
+        from jfuse.coupled import CoupledModel
+        from jfuse.io import load_network
+        
+        if verbose:
+            print(f"\nLoading network topology from: {network_file}")
+        
+        try:
+            network, hru_areas = load_network(str(network_file))
+        except KeyError as e:
+            print(f"  ERROR: Could not load network file: {e}")
+            print(f"  Falling back to area-weighted HRU aggregation")
+            use_channel_routing = False
+        except Exception as e:
+            print(f"  ERROR: Failed to load network: {e}")
+            print(f"  Falling back to area-weighted HRU aggregation")
+            use_channel_routing = False
+    
+    if use_channel_routing:
+        # Check HRU count matches
+        if len(network.reaches) != n_hrus:
+            if verbose:
+                print(f"  WARNING: Network has {len(network.reaches)} reaches but forcing has {n_hrus} HRUs")
+        
+        model = CoupledModel(
+            fuse_config=config,
+            network=network.to_arrays(),
+            hru_areas=hru_areas,
+            n_hrus=n_hrus,
+        )
+        
+        if verbose:
+            print(f"  Reaches: {len(network.reaches)}")
+            print(f"  Channel routing: Muskingum-Cunge")
+    else:
+        # Use FUSEModel only (no channel routing)
+        model = FUSEModel(config, n_hrus=n_hrus)
     
     forcing = (precip, pet, temp)
     
@@ -460,6 +618,16 @@ def run_calibration(
     if verbose:
         print(f"\nData loaded:")
         print(f"  Timesteps: {len(times)}")
+        if is_distributed:
+            print(f"  HRUs: {n_hrus} (distributed mode)")
+            print(f"  Hillslope routing (Q_TDH): {hillslope_routing}")
+            if use_channel_routing:
+                print(f"  Channel routing: Muskingum-Cunge")
+            else:
+                print(f"  Channel routing: none (area-weighted aggregation)")
+        else:
+            print(f"  Mode: lumped")
+            print(f"  Hillslope routing (Q_TDH): {hillslope_routing}")
         print(f"  Mean observed: {float(jnp.nanmean(obs)):.2f} mm/day")
     
     # Determine warmup
@@ -785,6 +953,9 @@ Examples:
   # Run simulation
   jfuse run fm_catch.txt bow_at_banff
   
+  # Run simulation with routing (requires network file and Q_TDH=rout_gamma in decisions)
+  jfuse run fm_catch.txt bow_at_banff --network=basin_network.nc
+  
   # Run calibration with gradient descent
   jfuse run fm_catch.txt bow_at_banff --mode=calib --method=gradient
   
@@ -793,6 +964,13 @@ Examples:
   
   # List all model structures
   jfuse structures
+
+Routing:
+  For distributed simulations, routing is automatically enabled when:
+  1. Q_TDH is set to 'rout_gamma' in the decisions file
+  2. A network topology file exists (basin_id_network.nc)
+  
+  Use --network to specify a custom network file path.
 """
     )
     
@@ -806,6 +984,8 @@ Examples:
                           help='Run mode: sim (simulation) or calib (calibration)')
     run_parser.add_argument('--method', choices=['gradient', 'sce'], default='gradient',
                           help='Calibration method (for --mode=calib)')
+    run_parser.add_argument('--network', type=str, default=None,
+                          help='Path to network topology file (overrides default naming)')
     run_parser.add_argument('--verbose', '-v', action='store_true', default=True,
                           help='Print progress messages')
     run_parser.add_argument('--quiet', '-q', action='store_true',
@@ -831,13 +1011,18 @@ Examples:
     if args.command == 'run':
         fm_config = parse_filemanager(args.filemanager)
         verbose = args.verbose and not args.quiet
+        network_path = getattr(args, 'network', None)
         
         if args.mode == 'sim':
-            result = run_simulation(fm_config, args.basin_id, verbose=verbose)
+            result = run_simulation(
+                fm_config, args.basin_id, 
+                verbose=verbose, network_path=network_path
+            )
         else:
             result = run_calibration(
                 fm_config, args.basin_id, 
-                method=args.method, verbose=verbose
+                method=args.method, verbose=verbose,
+                network_path=network_path
             )
         
         if verbose:

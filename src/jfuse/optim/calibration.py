@@ -115,6 +115,8 @@ def transform_to_unbounded(params: Parameters) -> Parameters:
     Returns:
         Parameters in unbounded space
     """
+    from jfuse.coupled import CoupledParams
+    
     def logit_transform(x: float, low: float, high: float) -> float:
         # Normalize to [0, 1]
         normalized = (x - low) / (high - low)
@@ -123,8 +125,28 @@ def transform_to_unbounded(params: Parameters) -> Parameters:
         # Logit transform
         return jnp.log(normalized / (1 - normalized))
     
+    # Handle CoupledParams specially - only transform the FUSE params
+    if isinstance(params, CoupledParams):
+        transformed_fuse = transform_to_unbounded(params.fuse_params)
+        return CoupledParams(
+            fuse_params=transformed_fuse,
+            manning_n=params.manning_n,
+            width_coef=params.width_coef,
+            width_exp=params.width_exp,
+            depth_coef=params.depth_coef,
+            depth_exp=params.depth_exp,
+        )
+    
+    # Get field names - works for both dataclass and NamedTuple
+    if hasattr(params, '__dataclass_fields__'):
+        field_names = params.__dataclass_fields__.keys()
+    elif hasattr(params, '_fields'):
+        field_names = params._fields
+    else:
+        raise TypeError(f"Cannot get fields from {type(params)}")
+    
     transformed_values = {}
-    for name in params.__dataclass_fields__:
+    for name in field_names:
         value = getattr(params, name)
         if name in PARAM_BOUNDS:
             low, high = PARAM_BOUNDS[name]
@@ -147,12 +169,34 @@ def transform_to_bounded(params: Parameters) -> Parameters:
     Returns:
         Parameters in bounded space
     """
+    from jfuse.coupled import CoupledParams
+    
     def sigmoid_transform(x: float, low: float, high: float) -> float:
         sigmoid = 1 / (1 + jnp.exp(-x))
         return low + (high - low) * sigmoid
     
+    # Handle CoupledParams specially - only transform the FUSE params
+    if isinstance(params, CoupledParams):
+        transformed_fuse = transform_to_bounded(params.fuse_params)
+        return CoupledParams(
+            fuse_params=transformed_fuse,
+            manning_n=params.manning_n,
+            width_coef=params.width_coef,
+            width_exp=params.width_exp,
+            depth_coef=params.depth_coef,
+            depth_exp=params.depth_exp,
+        )
+    
+    # Get field names - works for both dataclass and NamedTuple
+    if hasattr(params, '__dataclass_fields__'):
+        field_names = params.__dataclass_fields__.keys()
+    elif hasattr(params, '_fields'):
+        field_names = params._fields
+    else:
+        raise TypeError(f"Cannot get fields from {type(params)}")
+    
     transformed_values = {}
-    for name in params.__dataclass_fields__:
+    for name in field_names:
         value = getattr(params, name)
         if name in PARAM_BOUNDS:
             low, high = PARAM_BOUNDS[name]
@@ -172,8 +216,30 @@ def clip_to_bounds(params: Parameters) -> Parameters:
     Returns:
         Parameters clipped to valid bounds
     """
+    from jfuse.coupled import CoupledParams
+    
+    # Handle CoupledParams specially
+    if isinstance(params, CoupledParams):
+        clipped_fuse = clip_to_bounds(params.fuse_params)
+        return CoupledParams(
+            fuse_params=clipped_fuse,
+            manning_n=params.manning_n,
+            width_coef=params.width_coef,
+            width_exp=params.width_exp,
+            depth_coef=params.depth_coef,
+            depth_exp=params.depth_exp,
+        )
+    
+    # Get field names - works for both dataclass and NamedTuple
+    if hasattr(params, '__dataclass_fields__'):
+        field_names = params.__dataclass_fields__.keys()
+    elif hasattr(params, '_fields'):
+        field_names = params._fields
+    else:
+        raise TypeError(f"Cannot get fields from {type(params)}")
+    
     clipped_values = {}
-    for name in params.__dataclass_fields__:
+    for name in field_names:
         value = getattr(params, name)
         if name in PARAM_BOUNDS:
             low, high = PARAM_BOUNDS[name]

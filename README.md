@@ -1,10 +1,7 @@
 
 <p align="center">
-  <img src="src/assets/jfuse_logo.png" alt="jFUSE logo" width="180">
+  <img src="src/assets/jfuse_logo.png" alt="jFUSE logo" width="380">
 </p>
-
-<h1 align="center">jFUSE</h1>
-
 
 # JAX-based differentiable hydrological modeling framework implementing FUSE
 

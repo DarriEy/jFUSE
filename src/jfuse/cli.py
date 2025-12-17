@@ -515,26 +515,24 @@ def run_simulation(
     
     forcing = (precip, pet, temp)
     
-    # Load observations from CSV if provided (overrides NetCDF obs)
-    if obs_file:
+    # Load observations from CSV if provided AND we have a network for unit conversion
+    # For lumped mode, always use NetCDF observations (already in mm/day)
+    if obs_file and use_channel_routing:
         if verbose:
             print(f"\nLoading observations from CSV: {obs_file}")
         
-        # Get basin area for unit conversion
-        if use_channel_routing:
-            basin_area = float(jnp.sum(hru_areas))
-        else:
-            # Default to 1000 km² if no network, user should provide correct area
-            basin_area = 1e9  # 1000 km² in m²
-            if verbose:
-                print(f"  WARNING: No network file, using default basin area = 1000 km²")
-                print(f"           For correct units, ensure network file is provided or obs is in mm/day")
+        # Get basin area for unit conversion (m³/s -> mm/day)
+        basin_area = float(jnp.sum(hru_areas))
         
         obs = load_observations_csv(
             obs_file,
             times,
             basin_area,
         )
+    elif obs_file and not use_channel_routing:
+        if verbose:
+            print(f"\n  NOTE: --obs-file ignored for lumped mode (no network for unit conversion)")
+            print(f"        Using observations from NetCDF file (already in mm/day)")
     
     # Determine hillslope routing type from config
     hillslope_routing = "gamma" if config.routing == RoutingType.GAMMA else "none"
@@ -903,25 +901,24 @@ def run_calibration(
     
     forcing = (precip, pet, temp)
     
-    # Load observations from CSV if provided (overrides NetCDF obs)
-    if obs_file:
+    # Load observations from CSV if provided AND we have a network for unit conversion
+    # For lumped mode, always use NetCDF observations (already in mm/day)
+    if obs_file and use_channel_routing:
         if verbose:
             print(f"\nLoading observations from CSV: {obs_file}")
         
-        # Get basin area for unit conversion
-        if use_channel_routing:
-            basin_area = float(jnp.sum(hru_areas))
-        else:
-            # Default to 1000 km² if no network
-            basin_area = 1e9  # 1000 km² in m²
-            if verbose:
-                print(f"  WARNING: No network file, using default basin area = 1000 km²")
+        # Get basin area for unit conversion (m³/s -> mm/day)
+        basin_area = float(jnp.sum(hru_areas))
         
         obs = load_observations_csv(
             obs_file,
             times,
             basin_area,
         )
+    elif obs_file and not use_channel_routing:
+        if verbose:
+            print(f"\n  NOTE: --obs-file ignored for lumped mode (no network for unit conversion)")
+            print(f"        Using observations from NetCDF file (already in mm/day)")
     
     if obs is None:
         raise ValueError("No observations available for calibration!")
@@ -1381,7 +1378,9 @@ Routing:
                           choices=['first', 'last', 'mean', 'sum'],
                           help='How to aggregate 2D observations: first/last column, mean, or sum')
     run_parser.add_argument('--obs-file', type=str, default=None,
-                          help='CSV file with outlet observations (columns: datetime, discharge_cms)')
+                          help='CSV file with outlet observations (columns: datetime, discharge_cms). '
+                               'Only used for distributed mode with network file (converts m³/s to mm/day). '
+                               'For lumped mode, uses q_obs from NetCDF file.')
     run_parser.add_argument('--lr', type=float, default=0.01,
                           help='Learning rate for gradient-based calibration (default: 0.01)')
     run_parser.add_argument('--epochs', type=int, default=500,

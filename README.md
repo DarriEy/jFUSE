@@ -2,6 +2,8 @@
 
 A fully differentiable JAX implementation of the Framework for Understanding Structural Errors (FUSE) hydrological model from Clark et al. (2008), with Muskingum-Cunge routing.
 
+**Note: jFUSE is in active development**
+
 ## Features
 
 - **Fully differentiable**: Automatic differentiation through the entire model using JAX

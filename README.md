@@ -11,6 +11,14 @@ A fully differentiable JAX implementation of the Framework for Understanding Str
 - **Gradient-based calibration**: Built-in calibration with optax optimizers
 - **GPU-ready**: Seamless scaling to GPU with JAX
 
+### Requirements
+- Python >= 3.9
+- JAX >= 0.4.0
+- equinox >= 0.11.0
+- optax >= 0.1.7
+- numpy
+- xarray (for NetCDF I/O)
+
 ## Installation
 
 ```bash
@@ -23,15 +31,6 @@ pip install -e .
 # Or install with all dependencies
 pip install -e ".[dev]"
 ```
-
-### Requirements
-- Python >= 3.9
-- JAX >= 0.4.0
-- equinox >= 0.11.0
-- optax >= 0.1.7
-- numpy
-- xarray (for NetCDF I/O)
-
 ## Command Line Interface
 
 jFUSE provides a CLI compatible with FUSE file manager format:
@@ -45,6 +44,52 @@ jfuse run fm_catch.txt bow_at_banff --mode=calib --method=gradient
 
 # Show file manager configuration
 jfuse info fm_catch.txt
+```
+
+## Download Example Data
+
+We provide a ready-to-use example dataset for jFUSE (lumped and distributed setups).
+
+Download the ZIP release asset and unzip it into a `data/` folder:
+
+```bash
+wget https://github.com/DarriEy/jFUSE/releases/download/v0.1.0/jfuse-example-data-v0.1.0.zip
+unzip jfuse-example-data-v0.1.0.zip
+mv jfuse-example-data-v0.1.0 data
+```
+
+## Lumped configuration example
+
+This example calibrates a lumped jFUSE model using ERA5 forcing.
+
+```bash
+jfuse run \
+  data/domain_Bow_at_Banff_lumped_era5/settings/FUSE/fm_catch.txt \
+  Bow_at_Banff_lumped_era5 \
+  --mode=calib \
+  --method=gradient \
+  --loss=kge \
+  --lr=0.01 \
+  --epochs=500 \
+  --plot
+```
+
+## Distributed configuration example
+
+This example calibrates a distributed jFUSE model using a Muskingum–Cunge routing network.
+
+```bash
+jfuse run \
+  data/domain_Bow_at_Banff_distributed/settings/FUSE/fm_catch.txt \
+  Bow_at_Banff_distributed \
+  --mode=calib \
+  --method=gradient \
+  --network=data/domain_Bow_at_Banff_distributed/settings/mizuRoute/topology.nc \
+  --obs-file=data/domain_Bow_at_Banff_distributed/observations/streamflow/preprocessed/Bow_at_Banff_distributed_streamflow_processed.csv \
+  --loss=kge,nse \
+  --lr=0.01 \
+  --epochs=1000 \
+  --plot
 ```
 
 ## Package Structure

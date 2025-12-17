@@ -31,6 +31,11 @@ pip install -e .
 
 # Or install with all dependencies
 pip install -e ".[dev]"
+
+# Or install with PyPi
+pip install jfuse          # CPU
+pip install jfuse[gpu]     # CUDA
+
 ```
 ## Command Line Interface
 

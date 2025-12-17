@@ -328,26 +328,25 @@ RFERR_MAP = {
 def parse_decisions_file(filepath: str) -> Dict[str, str]:
     """Parse a FUSE decisions file.
     
-    The decisions file format is:
-        DECISION_NAME  option_value  ! optional comment
-        
-    Lines starting with ! are comments.
-    
-    Args:
-        filepath: Path to the decisions file
-        
-    Returns:
-        Dictionary mapping decision names to their values
+    Supports both:
+    1. jFUSE format: KEY VALUE  (e.g., ARCH1 tension1_1)
+    2. FUSE Fortran: VALUE KEY  (e.g., tension1_1 ARCH1)
     """
     decisions = {}
     path = Path(filepath)
+    
+    # List of known configuration keys
+    KNOWN_KEYS = {
+        'ARCH1', 'ARCH2', 'QSURF', 'QPERC', 'ESOIL', 
+        'QINTF', 'Q_TDH', 'SNOWM', 'RFERR'
+    }
     
     with open(path, 'r') as f:
         for line in f:
             line = line.strip()
             
-            # Skip empty lines and comments
-            if not line or line.startswith('!'):
+            # Skip empty lines, comments, and separator lines (dashes)
+            if not line or line.startswith('!') or line.startswith('-'):
                 continue
             
             # Remove inline comments
@@ -357,9 +356,22 @@ def parse_decisions_file(filepath: str) -> Dict[str, str]:
             # Parse decision
             parts = line.split()
             if len(parts) >= 2:
-                decision_name = parts[0].upper()
-                decision_value = parts[1].lower()
-                decisions[decision_name] = decision_value
+                token0 = parts[0].upper()
+                token1 = parts[1].upper()
+                
+                # Check logic: Is the first token a Key? (jFUSE style)
+                if token0 in KNOWN_KEYS:
+                    key = token0
+                    val = parts[1].lower()
+                # Is the second token a Key? (Fortran FUSE style)
+                elif token1 in KNOWN_KEYS:
+                    key = token1
+                    val = parts[0].lower()
+                else:
+                    # Fallback or skip
+                    continue
+                    
+                decisions[key] = val
     
     return decisions
 

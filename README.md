@@ -1,5 +1,10 @@
 # jFUSE: JAX Implementation of FUSE
 
+![CI](https://github.com/DarriEy/jFUSE/actions/workflows/ci.yml/badge.svg)
+[![PyPI version](https://img.shields.io/pypi/v/jfuse.svg)](https://pypi.org/project/jfuse/)
+[![Python versions](https://img.shields.io/pypi/pyversions/jfuse.svg)](https://pypi.org/project/jfuse/)
+[![License](https://img.shields.io/github/license/DarriEy/jFUSE.svg)](LICENSE)
+
 A fully differentiable JAX implementation of the Framework for Understanding Structural Errors (FUSE) hydrological model from Clark et al. (2008), with Muskingum-Cunge routing.
 
 **Note: jFUSE is in active development**

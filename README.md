@@ -50,42 +50,6 @@ jfuse info fm_catch.txt
 jfuse structures
 ```
 
-### File Manager Format
-
-jFUSE reads the standard FUSE file manager format:
-
-```
-FUSE_FILEMANAGER_V1.5
-! *** paths
-'/path/to/settings/'     ! SETNGS_PATH
-'/path/to/forcing/'      ! INPUT_PATH
-'/path/to/output/'       ! OUTPUT_PATH
-! *** suffixes
-'_input.nc'              ! suffix_forcing
-'_elev_bands.nc'         ! suffix_elev_bands
-! *** settings files
-'input_info.txt'         ! FORCING_INFO
-'fuse_zConstraints.txt'  ! CONSTRAINTS
-'fuse_zNumerix.txt'      ! MOD_NUMERIX
-'fuse_zDecisions.txt'    ! M_DECISIONS
-! *** output
-'run_1'                  ! FMODEL_ID
-'FALSE'                  ! Q_ONLY
-! *** dates
-'1980-01-01'             ! date_start_sim
-'2020-12-31'             ! date_end_sim
-'1981-01-01'             ! date_start_eval
-'2020-12-31'             ! date_end_eval
-'-9999'                  ! numtim_sub
-! *** evaluation
-'KGE'                    ! METRIC
-'1'                      ! TRANSFO
-! *** calibration
-'1000'                   ! MAXN
-'3'                      ! KSTOP
-'0.001'                  ! PCENTO
-```
-
 ## Package Structure
 
 ```

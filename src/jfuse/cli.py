@@ -25,6 +25,157 @@ import jax.numpy as jnp
 import numpy as np
 
 
+def load_observations_csv(
+    filepath: str,
+    times: np.ndarray,
+    basin_area_m2: float,
+    datetime_col: str = 'datetime',
+    discharge_col: str = 'discharge_cms',
+    datetime_format: str = None,
+) -> jnp.ndarray:
+    """Load observations from CSV file and align with forcing timestamps.
+    
+    Args:
+        filepath: Path to CSV file with datetime and discharge columns
+        times: Array of forcing timestamps (daily)
+        basin_area_m2: Total basin area in m² (for unit conversion)
+        datetime_col: Column name for datetime
+        discharge_col: Column name for discharge (in m³/s)
+        datetime_format: Datetime format string (auto-detected if None)
+        
+    Returns:
+        Observations array aligned with forcing times [n_timesteps] in mm/day
+    """
+    import pandas as pd
+    
+    df = pd.read_csv(filepath)
+    
+    # Auto-detect datetime format
+    if datetime_format is None:
+        # Try common formats
+        sample = df[datetime_col].iloc[0]
+        formats_to_try = [
+            '%d/%m/%Y %H:%M',  # 14/11/1999 10:00
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%d %H:%M',
+            '%Y/%m/%d %H:%M:%S',
+            '%Y/%m/%d %H:%M',
+            '%m/%d/%Y %H:%M',
+            '%d-%m-%Y %H:%M',
+        ]
+        for fmt in formats_to_try:
+            try:
+                pd.to_datetime(sample, format=fmt)
+                datetime_format = fmt
+                break
+            except:
+                continue
+    
+    if datetime_format:
+        df[datetime_col] = pd.to_datetime(df[datetime_col], format=datetime_format)
+    else:
+        df[datetime_col] = pd.to_datetime(df[datetime_col])
+    
+    df = df.set_index(datetime_col)
+    
+    # Resample to daily mean if hourly/sub-daily
+    df_daily = df.resample('1D').mean()
+    
+    # Convert m³/s to mm/day: Q_mm = Q_m3s * 86400 / area_m2 * 1000
+    # = Q_m3s * 86400000 / area_m2
+    df_daily['q_mm_day'] = df_daily[discharge_col] * 86400.0 * 1000.0 / basin_area_m2
+    
+    # Align with forcing times
+    forcing_times = pd.DatetimeIndex(times)
+    obs_aligned = np.full(len(forcing_times), np.nan)
+    
+    for i, t in enumerate(forcing_times):
+        t_date = t.normalize()  # Get date only
+        if t_date in df_daily.index:
+            obs_aligned[i] = df_daily.loc[t_date, 'q_mm_day']
+    
+    n_valid = np.sum(~np.isnan(obs_aligned))
+    print(f"  Loaded {n_valid}/{len(obs_aligned)} observations from CSV")
+    print(f"  Obs range: {np.nanmin(obs_aligned):.4f} - {np.nanmax(obs_aligned):.4f} mm/day")
+    print(f"  Obs mean: {np.nanmean(obs_aligned):.4f} mm/day")
+    
+    return jnp.array(obs_aligned)
+
+
+def plot_hydrograph(
+    times: np.ndarray,
+    simulated: np.ndarray,
+    observed: Optional[np.ndarray] = None,
+    output_path: str = None,
+    title: str = "Hydrograph",
+    warmup_days: int = 0,
+    metrics: Optional[Dict[str, float]] = None,
+) -> None:
+    """Plot simulated vs observed hydrograph.
+    
+    Args:
+        times: Array of timestamps
+        simulated: Simulated discharge [n_timesteps] in mm/day
+        observed: Observed discharge [n_timesteps] in mm/day (optional)
+        output_path: Path to save plot (if None, displays interactively)
+        title: Plot title
+        warmup_days: Number of warmup days to mark
+        metrics: Dictionary of performance metrics to display
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+    except ImportError:
+        print("  WARNING: matplotlib not installed, skipping plot")
+        print("           Install with: pip install matplotlib")
+        return
+    
+    fig, ax = plt.subplots(figsize=(12, 5))
+    
+    # Convert times to matplotlib format
+    times_plot = np.array(times, dtype='datetime64[D]').astype('datetime64[us]').astype(datetime)
+    
+    # Plot simulated
+    ax.plot(times_plot, simulated, 'b-', label='Simulated', linewidth=0.8, alpha=0.8)
+    
+    # Plot observed if available
+    if observed is not None:
+        ax.plot(times_plot, observed, 'k-', label='Observed', linewidth=0.8, alpha=0.8)
+    
+    # Mark warmup period
+    if warmup_days > 0 and warmup_days < len(times):
+        ax.axvline(times_plot[warmup_days], color='r', linestyle='--', 
+                   alpha=0.5, label=f'Warmup ({warmup_days} days)')
+    
+    # Add metrics text box
+    if metrics:
+        metrics_text = '\n'.join([f'{k.upper()}: {v:.3f}' for k, v in metrics.items()])
+        ax.text(0.02, 0.98, metrics_text, transform=ax.transAxes, 
+                fontsize=9, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Discharge (mm/day)')
+    ax.set_title(title)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    
+    # Format x-axis dates
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    plt.xticks(rotation=45)
+    
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"  Plot saved to: {output_path}")
+    else:
+        plt.show()
+    
+    plt.close()
+
+
 def load_forcing_netcdf(
     filepath: str,
     forcing_info: 'ForcingInfo',
@@ -206,6 +357,9 @@ def run_simulation(
     basin_id: str,
     verbose: bool = True,
     network_path: Optional[str] = None,
+    obs_agg: str = 'first',
+    obs_file: Optional[str] = None,
+    plot: bool = False,
 ) -> Dict[str, Any]:
     """Run a jFUSE simulation.
     
@@ -214,6 +368,9 @@ def run_simulation(
         basin_id: Basin identifier
         verbose: Print progress messages
         network_path: Path to network topology file (overrides default naming)
+        obs_agg: How to aggregate 2D observations ('first', 'last', 'mean', 'sum')
+        obs_file: Path to CSV file with outlet observations (overrides NetCDF obs)
+        plot: Generate hydrograph plot
         
     Returns:
         Dictionary with simulation results
@@ -317,12 +474,29 @@ def run_simulation(
                 print(f"  WARNING: Network has {len(network.reaches)} reaches but forcing has {n_hrus} HRUs")
                 print(f"  Using min({len(network.reaches)}, {n_hrus}) for simulation")
         
+        # Debug: Check outlet detection
+        network_arrays = network.to_arrays()
+        n_outlets = int(jnp.sum(network_arrays.is_outlet))
+        outlet_indices = jnp.where(network_arrays.is_outlet)[0]
+        if verbose:
+            print(f"  Outlets detected: {n_outlets} at indices {list(outlet_indices)}")
+            if n_outlets == 0:
+                print(f"  WARNING: No outlets found in network! Check downstream_id values.")
+                # Show some downstream IDs for debugging
+                print(f"  DEBUG: First 5 downstream_idx: {list(network_arrays.downstream_idx[:5])}")
+        
         model = CoupledModel(
             fuse_config=config,
-            network=network.to_arrays(),
+            network=network_arrays,
             hru_areas=hru_areas,
             n_hrus=n_hrus,
         )
+        
+        # Final sanity check on outlet detection
+        if n_outlets == 0:
+            print(f"  CRITICAL: No outlets in network! Routing will not work.")
+            print(f"  Check your network file's downstream_id/downSegId values.")
+            print(f"  Outlets are identified when downstream_id = 0, -1, or points to non-existent reach.")
         
         params = model.default_params()
         initial_state = None  # CoupledModel will create default
@@ -340,6 +514,27 @@ def run_simulation(
         initial_state = State.default(n_hrus=n_hrus)
     
     forcing = (precip, pet, temp)
+    
+    # Load observations from CSV if provided (overrides NetCDF obs)
+    if obs_file:
+        if verbose:
+            print(f"\nLoading observations from CSV: {obs_file}")
+        
+        # Get basin area for unit conversion
+        if use_channel_routing:
+            basin_area = float(jnp.sum(hru_areas))
+        else:
+            # Default to 1000 km² if no network, user should provide correct area
+            basin_area = 1e9  # 1000 km² in m²
+            if verbose:
+                print(f"  WARNING: No network file, using default basin area = 1000 km²")
+                print(f"           For correct units, ensure network file is provided or obs is in mm/day")
+        
+        obs = load_observations_csv(
+            obs_file,
+            times,
+            basin_area,
+        )
     
     # Determine hillslope routing type from config
     hillslope_routing = "gamma" if config.routing == RoutingType.GAMMA else "none"
@@ -365,7 +560,29 @@ def run_simulation(
             obs_mean = float(jnp.nanmean(obs[~jnp.isnan(obs)]))
             print(f"  Mean observed Q: {obs_mean:.2f} mm/day")
             if obs.ndim > 1:
-                print(f"  WARNING: Observations are {obs.ndim}D with shape {obs.shape}, expected 1D")
+                # Check if observations are tiled (same value across all HRUs)
+                obs_col0 = obs[:, 0]
+                obs_col_last = obs[:, -1]
+                is_tiled = jnp.allclose(obs_col0, obs_col_last, equal_nan=True)
+                
+                # Show aggregation info
+                print(f"  2D obs shape: {obs.shape}, using --obs-agg={obs_agg}")
+                if obs_agg == 'first':
+                    agg_val = float(jnp.nanmean(obs_col0))
+                elif obs_agg == 'last':
+                    agg_val = float(jnp.nanmean(obs[:, -1]))
+                elif obs_agg == 'mean':
+                    agg_val = float(jnp.nanmean(jnp.mean(obs, axis=1)))
+                elif obs_agg == 'sum':
+                    agg_val = float(jnp.nanmean(jnp.sum(obs, axis=1)))
+                else:
+                    agg_val = obs_mean
+                print(f"  Aggregated obs mean: {agg_val:.4f} mm/day")
+                
+                if is_tiled:
+                    print(f"  INFO: Observations appear tiled (same across HRUs)")
+                    sum_val = float(jnp.nanmean(obs_col0 * obs.shape[1]))
+                    print(f"        Try --obs-agg=sum if obs was divided by n_hrus ({sum_val:.4f} mm/day)")
     
     # Run simulation
     if verbose:
@@ -374,13 +591,24 @@ def run_simulation(
     t0 = time.time()
     
     if use_channel_routing:
-        # CoupledModel returns (runoff_hru, Q_outlet)
-        runoff_hru, Q_outlet = model.simulate(forcing, params, initial_state)
-        # For metrics, use outlet discharge (convert from m³/s to mm/day if needed)
-        # Q_outlet is in m³/s, need to compare with obs which is in mm/day
-        # For now, use runoff_hru aggregated
+        # CoupledModel returns (outlet_Q, runoff) - NOT (runoff, Q_outlet)!
+        Q_outlet, runoff_hru = model.simulate(forcing, params, initial_state)
+        # For metrics, use aggregated runoff in mm/day (same units as obs)
         runoff = runoff_hru
         final_state = None
+        
+        # Debug: Check routing output
+        if verbose:
+            from jfuse.coupled import runoff_to_inflow
+            network_arrays = model.network
+            print(f"  DEBUG: is_outlet sum = {int(jnp.sum(network_arrays.is_outlet))}")
+            print(f"  DEBUG: outlet indices = {list(jnp.where(network_arrays.is_outlet)[0])}")
+            print(f"  DEBUG: hru_areas range = {float(model.hru_areas.min()):.2e} - {float(model.hru_areas.max()):.2e} m²")
+            
+            # Check lateral inflow
+            lateral_inflow = runoff_to_inflow(runoff_hru, model.hru_areas, 86400.0)
+            print(f"  DEBUG: lateral_inflow range = {float(lateral_inflow.min()):.4f} - {float(lateral_inflow.max()):.4f} m³/s")
+            print(f"  DEBUG: Q_outlet range = {float(Q_outlet.min()):.4f} - {float(Q_outlet.max()):.4f} m³/s")
     else:
         runoff, final_state = model.simulate(forcing, params, initial_state)
     
@@ -412,12 +640,20 @@ def run_simulation(
         # Ensure observations are 1D (outlet only)
         obs_1d = obs
         if obs.ndim > 1:
-            # Take mean or first column - observations should be at outlet
             if obs.shape[1] == 1:
                 obs_1d = obs.squeeze()
             else:
-                # Multiple columns - take mean (assumes area-weighted obs)
-                obs_1d = jnp.mean(obs, axis=1)
+                # Apply aggregation method
+                if obs_agg == 'first':
+                    obs_1d = obs[:, 0]
+                elif obs_agg == 'last':
+                    obs_1d = obs[:, -1]
+                elif obs_agg == 'mean':
+                    obs_1d = jnp.mean(obs, axis=1)
+                elif obs_agg == 'sum':
+                    obs_1d = jnp.sum(obs, axis=1)
+                else:
+                    obs_1d = obs[:, 0]  # Default to first
         
         # Compute metrics after warmup
         sim_eval = runoff_agg[warmup_days:]
@@ -474,6 +710,41 @@ def run_simulation(
         config,
     )
     
+    # Generate plot if requested
+    if plot:
+        if verbose:
+            print(f"\nGenerating hydrograph plot...")
+        
+        # Get 1D arrays for plotting
+        if runoff.ndim > 1:
+            runoff_plot = np.array(jnp.mean(runoff, axis=1))
+        else:
+            runoff_plot = np.array(runoff)
+        
+        obs_plot = None
+        if obs is not None:
+            if obs.ndim > 1:
+                obs_plot = np.array(obs[:, 0])
+            else:
+                obs_plot = np.array(obs)
+        
+        # Determine warmup for plot
+        if fm_config.date_start_eval and fm_config.date_start_sim:
+            warmup_plot = (fm_config.date_start_eval - fm_config.date_start_sim).days
+        else:
+            warmup_plot = 365
+        
+        plot_file = output_file.parent / f"{fm_config.model_id}_hydrograph.png"
+        plot_hydrograph(
+            times,
+            runoff_plot,
+            obs_plot,
+            output_path=str(plot_file),
+            title=f"{basin_id} - {fm_config.model_id}",
+            warmup_days=warmup_plot,
+            metrics=metrics if metrics else None,
+        )
+    
     return {
         'runoff': runoff,
         'times': times,
@@ -491,6 +762,11 @@ def run_calibration(
     method: str = 'gradient',
     verbose: bool = True,
     network_path: Optional[str] = None,
+    obs_agg: str = 'first',
+    obs_file: Optional[str] = None,
+    learning_rate: float = 0.01,
+    epochs: int = 500,
+    plot: bool = False,
 ) -> Dict[str, Any]:
     """Run jFUSE calibration.
     
@@ -500,6 +776,11 @@ def run_calibration(
         method: Calibration method ('gradient' or 'sce')
         verbose: Print progress messages
         network_path: Path to network topology file (overrides default naming)
+        obs_agg: How to aggregate 2D observations ('first', 'last', 'mean', 'sum')
+        obs_file: Path to CSV file with outlet observations (overrides NetCDF obs)
+        learning_rate: Learning rate for gradient-based calibration
+        epochs: Number of calibration iterations
+        plot: Generate hydrograph plot
         
     Returns:
         Dictionary with calibration results
@@ -596,9 +877,17 @@ def run_calibration(
             if verbose:
                 print(f"  WARNING: Network has {len(network.reaches)} reaches but forcing has {n_hrus} HRUs")
         
+        # Debug: Check outlet detection
+        network_arrays = network.to_arrays()
+        n_outlets = int(jnp.sum(network_arrays.is_outlet))
+        if verbose:
+            print(f"  Outlets detected: {n_outlets}")
+            if n_outlets == 0:
+                print(f"  WARNING: No outlets found in network! Check downstream_id values.")
+        
         model = CoupledModel(
             fuse_config=config,
-            network=network.to_arrays(),
+            network=network_arrays,
             hru_areas=hru_areas,
             n_hrus=n_hrus,
         )
@@ -612,8 +901,49 @@ def run_calibration(
     
     forcing = (precip, pet, temp)
     
+    # Load observations from CSV if provided (overrides NetCDF obs)
+    if obs_file:
+        if verbose:
+            print(f"\nLoading observations from CSV: {obs_file}")
+        
+        # Get basin area for unit conversion
+        if use_channel_routing:
+            basin_area = float(jnp.sum(hru_areas))
+        else:
+            # Default to 1000 km² if no network
+            basin_area = 1e9  # 1000 km² in m²
+            if verbose:
+                print(f"  WARNING: No network file, using default basin area = 1000 km²")
+        
+        obs = load_observations_csv(
+            obs_file,
+            times,
+            basin_area,
+        )
+    
     if obs is None:
         raise ValueError("No observations available for calibration!")
+    
+    # Preprocess observations to 1D if needed
+    if obs.ndim > 1:
+        if obs.shape[1] == 1:
+            obs = obs.squeeze(-1)
+        else:
+            # Apply aggregation method
+            if obs_agg == 'first':
+                obs = obs[:, 0]
+            elif obs_agg == 'last':
+                obs = obs[:, -1]
+            elif obs_agg == 'mean':
+                obs = jnp.mean(obs, axis=1)
+            elif obs_agg == 'sum':
+                obs = jnp.sum(obs, axis=1)
+            else:
+                obs = obs[:, 0]
+            
+            if verbose:
+                print(f"\n  2D obs aggregated using --obs-agg={obs_agg}")
+                print(f"  Aggregated obs mean: {float(jnp.nanmean(obs)):.4f} mm/day")
     
     if verbose:
         print(f"\nData loaded:")
@@ -646,11 +976,11 @@ def run_calibration(
     
     if method == 'gradient':
         calib_config = CalibrationConfig(
-            max_iterations=fm_config.maxn,
-            learning_rate=0.01,
+            max_iterations=epochs,
+            learning_rate=learning_rate,
             optimizer='adam',
             patience=50,
-            log_every=max(1, fm_config.maxn // 20),
+            log_every=max(1, epochs // 20),
         )
         
         calibrator = Calibrator(model, calib_config)
@@ -658,6 +988,7 @@ def run_calibration(
         if verbose:
             print(f"\nStarting gradient-based calibration...")
             print(f"  Max iterations: {calib_config.max_iterations}")
+            print(f"  Learning rate: {calib_config.learning_rate}")
             print(f"  Optimizer: {calib_config.optimizer}")
         
         t0 = time.time()
@@ -681,15 +1012,25 @@ def run_calibration(
         print(f"  Best {loss_fn.upper()}: {1 - best_loss:.4f}")
     
     # Run final simulation with best parameters
-    state = model.default_state()
-    runoff, final_state = model.simulate(forcing, best_params, state)
+    from jfuse.coupled import CoupledModel
     
-    # For distributed case, aggregate runoff across HRUs
-    # (simple sum/mean - for proper routing, use CoupledModel)
-    if runoff.ndim > 1:
-        runoff_agg = jnp.mean(runoff, axis=1)  # Mean across HRUs
+    if isinstance(model, CoupledModel):
+        # CoupledModel returns (outlet_Q, runoff)
+        outlet_Q, runoff = model.simulate(forcing, best_params)
+        # outlet_Q is in m³/s, runoff is in mm/day
+        # For metrics, use aggregated runoff in mm/day (same units as obs)
+        runoff_agg = jnp.mean(runoff, axis=1) if runoff.ndim > 1 else runoff
+        final_state = None
     else:
-        runoff_agg = runoff
+        # FUSEModel
+        state = model.default_state()
+        runoff, final_state = model.simulate(forcing, best_params, state)
+        
+        # For distributed case, aggregate runoff across HRUs
+        if runoff.ndim > 1:
+            runoff_agg = jnp.mean(runoff, axis=1)
+        else:
+            runoff_agg = runoff
     
     # Ensure obs is 1D
     obs_1d = obs
@@ -697,7 +1038,17 @@ def run_calibration(
         if obs.shape[1] == 1:
             obs_1d = obs.squeeze()
         else:
-            obs_1d = jnp.mean(obs, axis=1)
+            # Apply aggregation method
+            if obs_agg == 'first':
+                obs_1d = obs[:, 0]
+            elif obs_agg == 'last':
+                obs_1d = obs[:, -1]
+            elif obs_agg == 'mean':
+                obs_1d = jnp.mean(obs, axis=1)
+            elif obs_agg == 'sum':
+                obs_1d = jnp.sum(obs, axis=1)
+            else:
+                obs_1d = obs[:, 0]  # Default to first
     
     # Compute final metrics
     sim_eval = runoff_agg[warmup_days:]
@@ -758,6 +1109,35 @@ def run_calibration(
     
     if verbose:
         print(f"Parameters saved to: {params_file}")
+    
+    # Generate plot if requested
+    if plot:
+        if verbose:
+            print(f"\nGenerating hydrograph plot...")
+        
+        # Get 1D arrays for plotting
+        if runoff.ndim > 1:
+            runoff_plot = np.array(jnp.mean(runoff, axis=1))
+        else:
+            runoff_plot = np.array(runoff)
+        
+        obs_plot = None
+        if obs is not None:
+            if obs.ndim > 1:
+                obs_plot = np.array(obs[:, 0])
+            else:
+                obs_plot = np.array(obs)
+        
+        plot_file = output_file.parent / f"{fm_config.model_id}_calib_hydrograph.png"
+        plot_hydrograph(
+            times,
+            runoff_plot,
+            obs_plot,
+            output_path=str(plot_file),
+            title=f"{basin_id} - Calibrated ({fm_config.model_id})",
+            warmup_days=warmup_days,
+            metrics=metrics,
+        )
     
     return {
         'runoff': runoff,
@@ -986,6 +1366,17 @@ Routing:
                           help='Calibration method (for --mode=calib)')
     run_parser.add_argument('--network', type=str, default=None,
                           help='Path to network topology file (overrides default naming)')
+    run_parser.add_argument('--obs-agg', type=str, default='first', 
+                          choices=['first', 'last', 'mean', 'sum'],
+                          help='How to aggregate 2D observations: first/last column, mean, or sum')
+    run_parser.add_argument('--obs-file', type=str, default=None,
+                          help='CSV file with outlet observations (columns: datetime, discharge_cms)')
+    run_parser.add_argument('--lr', type=float, default=0.01,
+                          help='Learning rate for gradient-based calibration (default: 0.01)')
+    run_parser.add_argument('--epochs', type=int, default=500,
+                          help='Number of iterations for calibration (default: 500)')
+    run_parser.add_argument('--plot', action='store_true',
+                          help='Generate hydrograph plot after run')
     run_parser.add_argument('--verbose', '-v', action='store_true', default=True,
                           help='Print progress messages')
     run_parser.add_argument('--quiet', '-q', action='store_true',
@@ -1012,17 +1403,27 @@ Routing:
         fm_config = parse_filemanager(args.filemanager)
         verbose = args.verbose and not args.quiet
         network_path = getattr(args, 'network', None)
+        obs_agg = getattr(args, 'obs_agg', 'first')
+        obs_file = getattr(args, 'obs_file', None)
+        do_plot = getattr(args, 'plot', False)
+        learning_rate = getattr(args, 'lr', 0.01)
+        epochs = getattr(args, 'epochs', 500)
         
         if args.mode == 'sim':
             result = run_simulation(
                 fm_config, args.basin_id, 
-                verbose=verbose, network_path=network_path
+                verbose=verbose, network_path=network_path,
+                obs_agg=obs_agg, obs_file=obs_file,
+                plot=do_plot
             )
         else:
             result = run_calibration(
                 fm_config, args.basin_id, 
                 method=args.method, verbose=verbose,
-                network_path=network_path
+                network_path=network_path,
+                obs_agg=obs_agg, obs_file=obs_file,
+                learning_rate=learning_rate, epochs=epochs,
+                plot=do_plot
             )
         
         if verbose:

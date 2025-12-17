@@ -323,40 +323,64 @@ class Calibrator:
         Returns:
             Loss function taking parameters and returning scalar loss
         """
-        from ..coupled import nse_loss, kge_loss
+        from ..coupled import nse_loss, kge_loss, CoupledModel
+        from ..fuse import FUSEModel
+        
+        # Ensure observations are 1D (outlet only)
+        obs_1d = observed
+        if observed.ndim > 1:
+            # Take first column (outlet) or squeeze if single column
+            if observed.shape[1] == 1:
+                obs_1d = observed.squeeze(-1)
+            else:
+                obs_1d = observed[:, 0]  # Assume first column is outlet
         
         def loss_fn(params: Parameters) -> float:
-            # Run simulation
-            if hasattr(self.model, 'simulate'):
-                # Coupled model
-                outlet_Q, _ = self.model.simulate(forcing, params)
+            # Run simulation - detect model type properly
+            if isinstance(self.model, CoupledModel):
+                # Coupled model returns (outlet_Q_m3s, runoff_mm_day)
+                # NOTE: outlet_Q is in m³/s, but obs are in mm/day
+                # Use aggregated runoff for calibration (same units as obs)
+                outlet_Q, runoff = self.model.simulate(forcing, params)
+                
+                # Aggregate runoff to outlet (area-weighted mean)
+                if runoff.ndim > 1:
+                    sim = jnp.mean(runoff, axis=1)  # mm/day
+                else:
+                    sim = runoff
             else:
-                # FUSE-only model
+                # FUSEModel returns (runoff, final_state)
                 state = self.model.default_state()
-                _, outlet_Q = self.model.simulate(forcing, params, state)
+                runoff, _ = self.model.simulate(forcing, params, state)
+                
+                # Aggregate if distributed
+                if runoff.ndim > 1:
+                    sim = jnp.mean(runoff, axis=1)  # Area-weighted average
+                else:
+                    sim = runoff
             
-            # Compute loss after warmup
-            sim = outlet_Q[warmup_steps:]
-            obs = observed[warmup_steps:]
+            # Apply warmup
+            sim_eval = sim[warmup_steps:]
+            obs_eval = obs_1d[warmup_steps:]
             
             if loss_type == 'kge':
-                return kge_loss(sim, obs)
+                return kge_loss(sim_eval, obs_eval)
             elif loss_type == 'nse':
-                return nse_loss(sim, obs)
+                return nse_loss(sim_eval, obs_eval)
             elif loss_type == 'rmse':
-                return jnp.sqrt(jnp.mean((sim - obs)**2))
+                return jnp.sqrt(jnp.mean((sim_eval - obs_eval)**2))
             elif loss_type == 'multi':
                 # Multi-objective: weighted sum of metrics
                 w = weights or {'kge': 0.5, 'nse': 0.3, 'rmse': 0.2}
                 total = 0.0
                 if 'kge' in w:
-                    total += w['kge'] * kge_loss(sim, obs)
+                    total += w['kge'] * kge_loss(sim_eval, obs_eval)
                 if 'nse' in w:
-                    total += w['nse'] * nse_loss(sim, obs)
+                    total += w['nse'] * nse_loss(sim_eval, obs_eval)
                 if 'rmse' in w:
                     # Normalize RMSE by observed std
-                    rmse = jnp.sqrt(jnp.mean((sim - obs)**2))
-                    total += w['rmse'] * rmse / (jnp.std(obs) + 1e-6)
+                    rmse = jnp.sqrt(jnp.mean((sim_eval - obs_eval)**2))
+                    total += w['rmse'] * rmse / (jnp.std(obs_eval) + 1e-6)
                 return total
             else:
                 raise ValueError(f"Unknown loss type: {loss_type}")

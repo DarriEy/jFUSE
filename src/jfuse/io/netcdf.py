@@ -241,10 +241,30 @@ def load_network(
         # Likely in km, convert to m
         lengths = lengths * 1000.0
     
+    # Convert to lists for processing
+    reach_ids_list = list(reach_ids)
+    downstream_ids_list = list(downstream_ids)
+    
+    # Fix outlet detection - different systems use different conventions:
+    # - mizuRoute: 0 often means "no downstream" (outlet)
+    # - Some systems: -1 means outlet
+    # - Some systems: outlet downstream_id points to non-existent reach
+    # We standardize to -1 for outlets
+    reach_id_set = set(reach_ids_list)
+    for i in range(len(downstream_ids_list)):
+        ds_id = downstream_ids_list[i]
+        # Mark as outlet (-1) if:
+        # 1. downstream_id = 0 (common convention)
+        # 2. downstream_id < 0 (already outlet)
+        # 3. downstream_id not in reach_ids (orphan/outlet)
+        # 4. downstream_id = reach_id (self-referencing, rare)
+        if ds_id == 0 or ds_id < 0 or ds_id not in reach_id_set or ds_id == reach_ids_list[i]:
+            downstream_ids_list[i] = -1
+    
     # Create network
     network = create_network_from_topology(
-        reach_ids=list(reach_ids),
-        downstream_ids=list(downstream_ids),
+        reach_ids=reach_ids_list,
+        downstream_ids=downstream_ids_list,
         lengths=list(lengths),
         slopes=list(slopes),
         manning_n=list(manning_n) if manning_n is not None else None,

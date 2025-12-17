@@ -67,10 +67,9 @@ gpu = [
 all = ["jfuse[dev,viz,gpu]"]
 
 [project.urls]
-Homepage = "https://github.com/CH-Earth/jfuse"
-Documentation = "https://jfuse.readthedocs.io"
-Repository = "https://github.com/CH-Earth/jfuse"
-Issues = "https://github.com/CH-Earth/jfuse/issues"
+Homepage = "https://github.com/DarriEy/jFUSE"
+Repository = "https://github.com/DarriEy/jFUSE"
+Issues = "https://github.com/DarriEy/jFUSE/issues"
 
 [project.scripts]
 jfuse = "jfuse.cli:main"

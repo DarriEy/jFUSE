@@ -1,0 +1,105 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jfuse"
+version = "0.1.0"
+description = "JAX-based differentiable hydrological modeling framework implementing FUSE and routing"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Darri Eythorsson", email = "darri.eythorsson@ucalgary.ca"}
+]
+keywords = [
+    "hydrology",
+    "jax",
+    "differentiable",
+    "machine-learning",
+    "fuse",
+    "routing",
+    "water-resources"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Hydrology",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "jax>=0.4.20",
+    "jaxlib>=0.4.20",
+    "numpy>=1.24.0",
+    "xarray>=2023.1.0",
+    "netcdf4>=1.6.0",
+    "pandas>=2.0.0",
+    "optax>=0.1.7",
+    "equinox>=0.11.0",
+    "typing-extensions>=4.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "isort>=5.12",
+    "mypy>=1.0",
+    "ruff>=0.1.0",
+]
+viz = [
+    "matplotlib>=3.7.0",
+    "geopandas>=0.14.0",
+    "contextily>=1.4.0",
+]
+gpu = [
+    "jax[cuda12_pip]>=0.4.20",
+]
+all = ["jfuse[dev,viz,gpu]"]
+
+[project.urls]
+Homepage = "https://github.com/CH-Earth/jfuse"
+Documentation = "https://jfuse.readthedocs.io"
+Repository = "https://github.com/CH-Earth/jfuse"
+Issues = "https://github.com/CH-Earth/jfuse/issues"
+
+[project.scripts]
+jfuse = "jfuse.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+jfuse = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-v"

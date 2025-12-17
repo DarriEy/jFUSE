@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="assets/jfuse_logo.png" alt="jFUSE logo" width="180">
+  <img src="src/assets/jfuse_logo.png" alt="jFUSE logo" width="180">
 </p>
 
 <h1 align="center">jFUSE</h1>

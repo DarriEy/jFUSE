@@ -766,6 +766,7 @@ def run_calibration(
     obs_file: Optional[str] = None,
     learning_rate: float = 0.01,
     epochs: int = 500,
+    loss_fn: str = 'kge',
     plot: bool = False,
 ) -> Dict[str, Any]:
     """Run jFUSE calibration.
@@ -780,6 +781,7 @@ def run_calibration(
         obs_file: Path to CSV file with outlet observations (overrides NetCDF obs)
         learning_rate: Learning rate for gradient-based calibration
         epochs: Number of calibration iterations
+        loss_fn: Loss function(s) - single or comma-separated for multi-objective
         plot: Generate hydrograph plot
         
     Returns:
@@ -969,10 +971,18 @@ def run_calibration(
     if verbose:
         print(f"  Warmup period: {warmup_days} days")
     
-    # Configure calibration
-    loss_fn = fm_config.metric.lower()
-    if loss_fn not in ['nse', 'kge']:
-        loss_fn = 'kge'
+    # Parse and validate loss function(s)
+    loss_types = [lt.strip().lower() for lt in loss_fn.split(',')]
+    valid_losses = ['kge', 'nse', 'rmse', 'mse', 'mae']
+    for lt in loss_types:
+        if lt not in valid_losses:
+            raise ValueError(f"Unknown loss function: {lt}. Available: {valid_losses}")
+    
+    # Format for display
+    if len(loss_types) == 1:
+        loss_display = loss_types[0].upper()
+    else:
+        loss_display = f"Multi({', '.join(lt.upper() for lt in loss_types)})"
     
     if method == 'gradient':
         calib_config = CalibrationConfig(
@@ -990,6 +1000,7 @@ def run_calibration(
             print(f"  Max iterations: {calib_config.max_iterations}")
             print(f"  Learning rate: {calib_config.learning_rate}")
             print(f"  Optimizer: {calib_config.optimizer}")
+            print(f"  Loss function: {loss_display}")
         
         t0 = time.time()
         result = calibrator.calibrate(
@@ -1009,7 +1020,7 @@ def run_calibration(
     
     if verbose:
         print(f"\nCalibration complete in {elapsed:.1f}s")
-        print(f"  Best {loss_fn.upper()}: {1 - best_loss:.4f}")
+        print(f"  Best loss ({loss_display}): {best_loss:.4f}")
     
     # Run final simulation with best parameters
     from jfuse.coupled import CoupledModel
@@ -1375,6 +1386,9 @@ Routing:
                           help='Learning rate for gradient-based calibration (default: 0.01)')
     run_parser.add_argument('--epochs', type=int, default=500,
                           help='Number of iterations for calibration (default: 500)')
+    run_parser.add_argument('--loss', type=str, default='kge',
+                          help='Loss function(s) for calibration. Single: kge, nse, rmse, mse, mae. '
+                               'Multi-objective: comma-separated, e.g., "kge,nse" (default: kge)')
     run_parser.add_argument('--plot', action='store_true',
                           help='Generate hydrograph plot after run')
     run_parser.add_argument('--verbose', '-v', action='store_true', default=True,
@@ -1408,6 +1422,7 @@ Routing:
         do_plot = getattr(args, 'plot', False)
         learning_rate = getattr(args, 'lr', 0.01)
         epochs = getattr(args, 'epochs', 500)
+        loss = getattr(args, 'loss', 'kge')
         
         if args.mode == 'sim':
             result = run_simulation(
@@ -1423,7 +1438,7 @@ Routing:
                 network_path=network_path,
                 obs_agg=obs_agg, obs_file=obs_file,
                 learning_rate=learning_rate, epochs=epochs,
-                plot=do_plot
+                loss_fn=loss, plot=do_plot
             )
         
         if verbose:

@@ -45,9 +45,6 @@ jfuse run fm_catch.txt bow_at_banff --mode=calib --method=gradient
 
 # Show file manager configuration
 jfuse info fm_catch.txt
-
-# List all 432 model structures
-jfuse structures
 ```
 
 ## Package Structure

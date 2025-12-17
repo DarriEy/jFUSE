@@ -316,15 +316,46 @@ class Calibrator:
         Args:
             forcing: Tuple of forcing arrays (precip, pet, temp)
             observed: Observed discharge array
-            loss_type: Loss type ('kge', 'nse', 'rmse', 'multi')
+            loss_type: Loss type - single ('kge', 'nse', 'rmse', 'mse', 'mae') 
+                       or comma-separated for multi-objective ('kge,nse')
             warmup_steps: Number of timesteps to skip for loss calculation
-            weights: Weights for multi-objective loss
+            weights: Weights for multi-objective loss (equal weights if None)
             
         Returns:
             Loss function taking parameters and returning scalar loss
         """
-        from ..coupled import nse_loss, kge_loss, CoupledModel
+        from ..coupled import nse_loss, kge_loss, mse_loss, rmse_loss, mae_loss, CoupledModel
         from ..fuse import FUSEModel
+        
+        # Map loss names to functions
+        loss_functions = {
+            'kge': kge_loss,
+            'nse': nse_loss,
+            'mse': mse_loss,
+            'rmse': rmse_loss,
+            'mae': mae_loss,
+        }
+        
+        # Parse loss_type - could be single or comma-separated
+        loss_types = [lt.strip().lower() for lt in loss_type.split(',')]
+        
+        # Validate loss types
+        for lt in loss_types:
+            if lt not in loss_functions:
+                raise ValueError(f"Unknown loss type: {lt}. Available: {list(loss_functions.keys())}")
+        
+        # Set up weights for multi-objective
+        if len(loss_types) > 1:
+            if weights is None:
+                # Equal weights
+                weights = {lt: 1.0 / len(loss_types) for lt in loss_types}
+            else:
+                # Normalize weights
+                total_w = sum(weights.get(lt, 0.0) for lt in loss_types)
+                if total_w > 0:
+                    weights = {lt: weights.get(lt, 0.0) / total_w for lt in loss_types}
+                else:
+                    weights = {lt: 1.0 / len(loss_types) for lt in loss_types}
         
         # Ensure observations are 1D (outlet only)
         obs_1d = observed
@@ -363,27 +394,26 @@ class Calibrator:
             sim_eval = sim[warmup_steps:]
             obs_eval = obs_1d[warmup_steps:]
             
-            if loss_type == 'kge':
-                return kge_loss(sim_eval, obs_eval)
-            elif loss_type == 'nse':
-                return nse_loss(sim_eval, obs_eval)
-            elif loss_type == 'rmse':
-                return jnp.sqrt(jnp.mean((sim_eval - obs_eval)**2))
-            elif loss_type == 'multi':
-                # Multi-objective: weighted sum of metrics
-                w = weights or {'kge': 0.5, 'nse': 0.3, 'rmse': 0.2}
-                total = 0.0
-                if 'kge' in w:
-                    total += w['kge'] * kge_loss(sim_eval, obs_eval)
-                if 'nse' in w:
-                    total += w['nse'] * nse_loss(sim_eval, obs_eval)
-                if 'rmse' in w:
-                    # Normalize RMSE by observed std
-                    rmse = jnp.sqrt(jnp.mean((sim_eval - obs_eval)**2))
-                    total += w['rmse'] * rmse / (jnp.std(obs_eval) + 1e-6)
-                return total
-            else:
-                raise ValueError(f"Unknown loss type: {loss_type}")
+            # Single objective
+            if len(loss_types) == 1:
+                return loss_functions[loss_types[0]](sim_eval, obs_eval)
+            
+            # Multi-objective: weighted sum
+            total = 0.0
+            for lt in loss_types:
+                loss_val = loss_functions[lt](sim_eval, obs_eval)
+                
+                # Normalize RMSE/MSE/MAE by observed std for scale invariance
+                if lt in ['rmse', 'mse', 'mae']:
+                    obs_std = jnp.std(obs_eval)
+                    if lt == 'mse':
+                        loss_val = loss_val / jnp.maximum(obs_std ** 2, 1e-6)
+                    else:
+                        loss_val = loss_val / jnp.maximum(obs_std, 1e-6)
+                
+                total += weights[lt] * loss_val
+            
+            return total
         
         return loss_fn
     

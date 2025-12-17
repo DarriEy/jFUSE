@@ -352,6 +352,64 @@ def nse_loss(simulated: Array, observed: Array, warmup: int = 0) -> Array:
     return ss_res / jnp.maximum(ss_tot, 1e-10)
 
 
+def mse_loss(simulated: Array, observed: Array, warmup: int = 0) -> Array:
+    """Mean Squared Error loss.
+    
+    Args:
+        simulated: Simulated discharge [n_timesteps]
+        observed: Observed discharge [n_timesteps]
+        warmup: Number of warmup timesteps to exclude
+        
+    Returns:
+        MSE (lower is better)
+    """
+    sim = simulated[warmup:]
+    obs = observed[warmup:]
+    
+    valid = ~jnp.isnan(obs)
+    sim_v = jnp.where(valid, sim, 0.0)
+    obs_v = jnp.where(valid, obs, 0.0)
+    n_valid = jnp.sum(valid)
+    
+    return jnp.sum(jnp.where(valid, (sim_v - obs_v) ** 2, 0.0)) / jnp.maximum(n_valid, 1.0)
+
+
+def rmse_loss(simulated: Array, observed: Array, warmup: int = 0) -> Array:
+    """Root Mean Squared Error loss.
+    
+    Args:
+        simulated: Simulated discharge [n_timesteps]
+        observed: Observed discharge [n_timesteps]
+        warmup: Number of warmup timesteps to exclude
+        
+    Returns:
+        RMSE (lower is better)
+    """
+    return jnp.sqrt(mse_loss(simulated, observed, warmup))
+
+
+def mae_loss(simulated: Array, observed: Array, warmup: int = 0) -> Array:
+    """Mean Absolute Error loss.
+    
+    Args:
+        simulated: Simulated discharge [n_timesteps]
+        observed: Observed discharge [n_timesteps]
+        warmup: Number of warmup timesteps to exclude
+        
+    Returns:
+        MAE (lower is better)
+    """
+    sim = simulated[warmup:]
+    obs = observed[warmup:]
+    
+    valid = ~jnp.isnan(obs)
+    sim_v = jnp.where(valid, sim, 0.0)
+    obs_v = jnp.where(valid, obs, 0.0)
+    n_valid = jnp.sum(valid)
+    
+    return jnp.sum(jnp.where(valid, jnp.abs(sim_v - obs_v), 0.0)) / jnp.maximum(n_valid, 1.0)
+
+
 def kge_loss(simulated: Array, observed: Array, warmup: int = 0) -> Array:
     """Kling-Gupta Efficiency loss (1 - KGE).
     

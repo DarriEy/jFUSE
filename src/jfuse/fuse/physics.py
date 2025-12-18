@@ -180,33 +180,44 @@ def compute_evaporation_sequential(
     S1_max: Array,
     S2_max: Array,
 ) -> Tuple[Array, Array]:
-    """Sequential evaporation: upper layer first, then lower.
-    
-    Implements equations (3a) and (3b) from Clark et al. (2008).
-    
-    e1 = min(PET, S1)
-    e2 = min(PET - e1, S2) * (S2/S2_max)  [if S1 depleted]
-    
+    """Differentiable sequential evaporation (FUSE-faithful).
+
+    Upper layer satisfies PET demand first, limited by available storage.
+    Remaining PET is extracted from the lower layer with moisture stress.
+
+    This is a smooth, AD-safe implementation of Clark et al. (2008)
+    equations (3a) and (3b).
+
     Args:
         pet: Potential evapotranspiration (mm/day)
         S1: Upper layer storage (mm)
         S2: Lower layer storage (mm)
         S1_max: Maximum upper layer storage (mm)
         S2_max: Maximum lower layer storage (mm)
-        
+
     Returns:
-        Tuple of (e1, e2) - actual evaporation from each layer
+        Tuple of (e1, e2) evaporation from upper and lower layers
     """
-    # Upper layer evaporation (limited by storage and demand)
-    e1_demand = pet * (S1 / smooth_max(S1_max, 1.0, 0.01))
-    e1 = smooth_min(e1_demand, S1, 0.01)
-    
-    # Remaining demand goes to lower layer (if any)
-    remaining_pet = smooth_max(pet - e1, 0.0, 0.001)
-    e2_demand = remaining_pet * (S2 / smooth_max(S2_max, 1.0, 0.01))
+
+    # ------------------------------------------------------------------
+    # 1) Upper layer: full priority, limited only by storage
+    # ------------------------------------------------------------------
+    e1 = smooth_min(pet, S1, 0.01)
+
+    # ------------------------------------------------------------------
+    # 2) Remaining PET after upper layer extraction
+    # ------------------------------------------------------------------
+    pet_remain = smooth_max(pet - e1, 0.0, 0.001)
+
+    # ------------------------------------------------------------------
+    # 3) Lower layer: moisture-stressed extraction
+    # ------------------------------------------------------------------
+    S2_frac = S2 / smooth_max(S2_max, 1.0, 0.01)
+    e2_demand = pet_remain * S2_frac
     e2 = smooth_min(e2_demand, S2, 0.01)
-    
+
     return e1, e2
+
 
 
 def compute_evaporation_root_weighted(
@@ -261,7 +272,7 @@ def compute_percolation_total_storage(
 ) -> Array:
     """Percolation based on total upper zone storage (VIC style).
     
-    Implements equation (4a): q12 = ku * S1 * (S1/S1_max)^c
+    Implements equation (4a): q12 = ku * (S1/S1_max)^c
     
     Args:
         S1: Upper layer storage (mm)
@@ -273,7 +284,7 @@ def compute_percolation_total_storage(
         Percolation flux (mm/day)
     """
     S1_frac = S1 / smooth_max(S1_max, 1.0, 0.01)
-    return ku * S1 * safe_pow(S1_frac, c)
+    return ku * safe_pow(S1_frac, c)
 
 
 def compute_percolation_free_storage(

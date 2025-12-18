@@ -109,26 +109,6 @@ jfuse run \
   --plot
 ```
 
-## Package Structure
-
-```
-jfuse/
-├── src/jfuse/
-│   ├── fuse/              # FUSE model implementation
-│   │   ├── config.py      # Model configuration & decision file parsing
-│   │   ├── model.py       # Main FUSE model
-│   │   ├── state.py       # States, parameters, forcing
-│   │   └── physics/       # Physical process modules
-│   ├── routing/           # Muskingum-Cunge routing
-│   │   ├── muskingum.py   # Routing physics
-│   │   └── network.py     # River network topology
-│   ├── coupled.py         # FUSE + routing integration
-│   ├── optim/             # Calibration utilities
-│   │   └── calibration.py # Gradient-based calibration
-│   └── io/                # NetCDF I/O utilities
-└── README.md
-```
-
 ## License
 
 MIT License - see LICENSE file for details.

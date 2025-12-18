@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src/assets/jfuse-logo.png" alt="jFUSE logo" width="180">
+</p>
+
 # JAX-based differentiable hydrological modeling framework implementing FUSE
 
 ![CI](https://github.com/DarriEy/jFUSE/actions/workflows/ci.yml/badge.svg)

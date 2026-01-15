@@ -8,8 +8,7 @@ The model is implemented as pure functions that can be JIT-compiled and
 differentiated through.
 """
 
-from typing import Tuple, Optional, Callable
-from functools import partial
+from typing import Tuple, Optional
 
 import jax
 import jax.numpy as jnp
@@ -330,15 +329,13 @@ def fuse_simulate(
         
         forcing = Forcing(precip=p, pet=pe, temp=t)
         new_state, flux = fuse_step(state, forcing, params, config, dt, doy)
-        
-        # Advance day of year
-        new_doy = jnp.where(doy >= 365, 1, doy + 1)
-        
+
+        # Advance day of year with proper cycling (1-365 or 1-366 for leap years)
+        # Wrap at 366 to handle both cases; seasonal calculations use /365.0
+        new_doy = (doy % 366) + 1
+
         return (new_state, new_doy), flux.q_total
-    
-    # Stack forcing for scan
-    forcing_stack = jnp.stack([precip, pet, temp], axis=-1)
-    
+
     # Run simulation
     (final_state, _), runoff = lax.scan(
         scan_fn,

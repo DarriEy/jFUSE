@@ -13,6 +13,7 @@ The coupling handles:
 
 from typing import Tuple, Optional, Dict, Any, NamedTuple
 from functools import partial
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -150,10 +151,18 @@ def coupled_simulate(
     # Convert runoff to lateral inflow (m³/s)
     # Assume HRU i maps to reach i (can be customized via hru_to_reach mapping)
     lateral_inflow = runoff_to_inflow(runoff, hru_areas, fuse_dt * 86400.0)
-    
-    # If n_hrus != n_reaches, need to aggregate
+
+    # Handle HRU-to-reach dimension mismatch
+    if n_hrus != n_reaches:
+        warnings.warn(
+            f"HRU count ({n_hrus}) does not match reach count ({n_reaches}). "
+            f"Using automatic mapping: {'padding with zeros' if n_hrus < n_reaches else 'aggregating to last reach'}. "
+            f"For explicit control, provide hru_to_reach mapping.",
+            UserWarning,
+        )
+
     if n_hrus < n_reaches:
-        # Pad with zeros
+        # Pad with zeros for reaches without HRU inflow
         lateral_inflow = jnp.pad(
             lateral_inflow,
             ((0, 0), (0, n_reaches - n_hrus)),
@@ -161,8 +170,11 @@ def coupled_simulate(
             constant_values=0.0,
         )
     elif n_hrus > n_reaches:
-        # Aggregate to reach count (simple sum for now)
-        lateral_inflow = lateral_inflow[:, :n_reaches]
+        # Aggregate excess HRUs to last reach to preserve water balance
+        # This maintains total water volume while fitting to network structure
+        base_inflow = lateral_inflow[:, :n_reaches - 1]
+        excess_inflow = jnp.sum(lateral_inflow[:, n_reaches - 1:], axis=1, keepdims=True)
+        lateral_inflow = jnp.concatenate([base_inflow, excess_inflow], axis=1)
     
     # Update network with current manning_n
     # Create updated network arrays with calibrated Manning's n

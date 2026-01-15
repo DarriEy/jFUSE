@@ -146,8 +146,8 @@ class State(eqx.Module):
             State with default values
         """
         shape = (n_hrus,) if n_hrus > 1 else ()
-        # Use explicit dtype to ensure consistency with x64 mode
-        dtype = jnp.float64
+        # Use float32 for compatibility with neuralgcm (which requires JAX_ENABLE_X64=False)
+        dtype = jnp.float32
         return cls(
             S1=jnp.full(shape, 100.0, dtype=dtype),
             S1_T=jnp.full(shape, 40.0, dtype=dtype),
@@ -335,7 +335,8 @@ class Parameters(eqx.Module):
     def default(cls, n_hrus: int = 1) -> "Parameters":
         """Create default parameters."""
         shape = (n_hrus,) if n_hrus > 1 else ()
-        dtype = jnp.float64
+        # Use float32 for compatibility with neuralgcm (which requires JAX_ENABLE_X64=False)
+        dtype = jnp.float32
         
         # Adjustable parameters with reasonable defaults
         params = {
@@ -461,3 +462,95 @@ class Parameters(eqx.Module):
     def to_array(self) -> Array:
         """Convert adjustable parameters to flat array."""
         return jnp.stack([getattr(self, name) for name in PARAM_NAMES], axis=-1)
+
+    def validate_bounds(self, warn: bool = True) -> bool:
+        """Check if parameters are within valid bounds.
+
+        Args:
+            warn: If True, print warnings for out-of-bounds parameters
+
+        Returns:
+            True if all parameters are within bounds, False otherwise
+        """
+        import warnings
+        all_valid = True
+
+        for name in PARAM_NAMES:
+            if name not in PARAM_BOUNDS:
+                continue
+            value = getattr(self, name)
+            low, high = PARAM_BOUNDS[name]
+
+            # Handle both scalar and array values
+            val_min = float(jnp.min(value))
+            val_max = float(jnp.max(value))
+
+            if val_min < low or val_max > high:
+                all_valid = False
+                if warn:
+                    warnings.warn(
+                        f"Parameter '{name}' out of bounds: "
+                        f"value range [{val_min:.4f}, {val_max:.4f}] "
+                        f"not in [{low}, {high}]",
+                        UserWarning,
+                    )
+
+        return all_valid
+
+    @classmethod
+    def from_array_validated(cls, arr: Array, n_hrus: int = 1, clip: bool = True) -> "Parameters":
+        """Create parameters from flat array with optional bounds enforcement.
+
+        Args:
+            arr: Array of shape (NUM_PARAMETERS,) or (n_hrus, NUM_PARAMETERS)
+            n_hrus: Number of HRUs
+            clip: If True, clip values to valid bounds
+
+        Returns:
+            Parameters instance with derived quantities computed
+        """
+        params = cls.from_array(arr, n_hrus)
+
+        if clip:
+            # Clip each parameter to its bounds
+            clipped_values = {}
+            for name in PARAM_NAMES:
+                value = getattr(params, name)
+                if name in PARAM_BOUNDS:
+                    low, high = PARAM_BOUNDS[name]
+                    clipped_values[name] = jnp.clip(value, low, high)
+                else:
+                    clipped_values[name] = value
+
+            # Recompute derived parameters
+            S1_max = clipped_values["S1_max"]
+            S2_max = clipped_values["S2_max"]
+            f_tens = clipped_values["f_tens"]
+            f_rchr = clipped_values["f_rchr"]
+            f_base = clipped_values["f_base"]
+            n = clipped_values["n"]
+
+            S1_T_max = f_tens * S1_max
+            S1_F_max = (1.0 - f_tens) * S1_max
+            S1_TA_max = f_rchr * S1_T_max
+            S1_TB_max = (1.0 - f_rchr) * S1_T_max
+            S2_T_max = f_tens * S2_max
+            S2_F_max = (1.0 - f_tens) * S2_max
+            S2_FA_max = f_base * S2_F_max
+            S2_FB_max = (1.0 - f_base) * S2_F_max
+            m = S2_max / jnp.maximum(n, 0.1)
+
+            return cls(
+                **clipped_values,
+                S1_T_max=S1_T_max,
+                S1_F_max=S1_F_max,
+                S1_TA_max=S1_TA_max,
+                S1_TB_max=S1_TB_max,
+                S2_T_max=S2_T_max,
+                S2_F_max=S2_F_max,
+                S2_FA_max=S2_FA_max,
+                S2_FB_max=S2_FB_max,
+                m=m,
+            )
+
+        return params

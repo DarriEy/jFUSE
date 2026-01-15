@@ -6,6 +6,7 @@ Supports multi-objective optimization, parameter bounds, and adaptive learning r
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple, Any, NamedTuple
 from functools import partial
@@ -103,28 +104,92 @@ def create_optimizer(config: CalibrationConfig) -> optax.GradientTransformation:
     )
 
 
+def _get_field_names(obj) -> list:
+    """Get field names from dataclass, NamedTuple, or equinox.Module."""
+    import dataclasses
+    if dataclasses.is_dataclass(obj):
+        return [f.name for f in dataclasses.fields(obj)]
+    elif hasattr(obj, '_fields'):
+        return list(obj._fields)
+    else:
+        raise TypeError(f"Cannot get fields from {type(obj)}")
+
+
+def _reconstruct_parameters(params: Parameters, base_values: dict) -> Parameters:
+    """Reconstruct Parameters with recomputed derived values.
+
+    Args:
+        params: Original Parameters object (for type reference)
+        base_values: Dictionary of base parameter values
+
+    Returns:
+        New Parameters with derived values recomputed
+    """
+    # Extract values needed for derived computation
+    S1_max = base_values["S1_max"]
+    S2_max = base_values["S2_max"]
+    f_tens = base_values["f_tens"]
+    f_rchr = base_values["f_rchr"]
+    f_base = base_values["f_base"]
+    n = base_values["n"]
+
+    # Recompute derived parameters
+    S1_T_max = f_tens * S1_max
+    S1_F_max = (1.0 - f_tens) * S1_max
+    S1_TA_max = f_rchr * S1_T_max
+    S1_TB_max = (1.0 - f_rchr) * S1_T_max
+    S2_T_max = f_tens * S2_max
+    S2_F_max = (1.0 - f_tens) * S2_max
+    S2_FA_max = f_base * S2_F_max
+    S2_FB_max = (1.0 - f_base) * S2_F_max
+    m = S2_max / jnp.maximum(n, 0.1)
+
+    # Combine base and derived
+    all_values = {
+        **base_values,
+        "S1_T_max": S1_T_max,
+        "S1_F_max": S1_F_max,
+        "S1_TA_max": S1_TA_max,
+        "S1_TB_max": S1_TB_max,
+        "S2_T_max": S2_T_max,
+        "S2_F_max": S2_F_max,
+        "S2_FA_max": S2_FA_max,
+        "S2_FB_max": S2_FB_max,
+        "m": m,
+    }
+
+    return params.__class__(**all_values)
+
+
+# List of derived parameter names that should not be transformed
+_DERIVED_PARAMS = {
+    "S1_T_max", "S1_F_max", "S1_TA_max", "S1_TB_max",
+    "S2_T_max", "S2_F_max", "S2_FA_max", "S2_FB_max", "m"
+}
+
+
 def transform_to_unbounded(params: Parameters) -> Parameters:
     """Transform bounded parameters to unbounded space using logit.
-    
+
     This allows unconstrained optimization while respecting parameter bounds.
     Uses the transformation: x_unbounded = logit((x - low) / (high - low))
-    
+
     Args:
         params: Parameters in bounded space
-        
+
     Returns:
         Parameters in unbounded space
     """
     from jfuse.coupled import CoupledParams
-    
-    def logit_transform(x: float, low: float, high: float) -> float:
+
+    def logit_transform(x, low: float, high: float):
         # Normalize to [0, 1]
         normalized = (x - low) / (high - low)
         # Clip to avoid infinities
         normalized = jnp.clip(normalized, 1e-6, 1 - 1e-6)
         # Logit transform
         return jnp.log(normalized / (1 - normalized))
-    
+
     # Handle CoupledParams specially - only transform the FUSE params
     if isinstance(params, CoupledParams):
         transformed_fuse = transform_to_unbounded(params.fuse_params)
@@ -136,45 +201,44 @@ def transform_to_unbounded(params: Parameters) -> Parameters:
             depth_coef=params.depth_coef,
             depth_exp=params.depth_exp,
         )
-    
-    # Get field names - works for both dataclass and NamedTuple
-    if hasattr(params, '__dataclass_fields__'):
-        field_names = params.__dataclass_fields__.keys()
-    elif hasattr(params, '_fields'):
-        field_names = params._fields
-    else:
-        raise TypeError(f"Cannot get fields from {type(params)}")
-    
-    transformed_values = {}
+
+    # Get field names
+    field_names = _get_field_names(params)
+
+    # Transform only base parameters (not derived ones)
+    base_values = {}
     for name in field_names:
+        if name in _DERIVED_PARAMS:
+            continue  # Skip derived parameters
         value = getattr(params, name)
         if name in PARAM_BOUNDS:
             low, high = PARAM_BOUNDS[name]
-            transformed_values[name] = logit_transform(value, low, high)
+            base_values[name] = logit_transform(value, low, high)
         else:
-            transformed_values[name] = value
-    
-    return params.__class__(**transformed_values)
+            base_values[name] = value
+
+    # Reconstruct with recomputed derived parameters
+    return _reconstruct_parameters(params, base_values)
 
 
 def transform_to_bounded(params: Parameters) -> Parameters:
     """Transform unbounded parameters back to bounded space using sigmoid.
-    
+
     Inverse of transform_to_unbounded.
     Uses the transformation: x_bounded = low + (high - low) * sigmoid(x_unbounded)
-    
+
     Args:
         params: Parameters in unbounded space
-        
+
     Returns:
         Parameters in bounded space
     """
     from jfuse.coupled import CoupledParams
-    
-    def sigmoid_transform(x: float, low: float, high: float) -> float:
+
+    def sigmoid_transform(x, low: float, high: float):
         sigmoid = 1 / (1 + jnp.exp(-x))
         return low + (high - low) * sigmoid
-    
+
     # Handle CoupledParams specially - only transform the FUSE params
     if isinstance(params, CoupledParams):
         transformed_fuse = transform_to_bounded(params.fuse_params)
@@ -186,38 +250,37 @@ def transform_to_bounded(params: Parameters) -> Parameters:
             depth_coef=params.depth_coef,
             depth_exp=params.depth_exp,
         )
-    
-    # Get field names - works for both dataclass and NamedTuple
-    if hasattr(params, '__dataclass_fields__'):
-        field_names = params.__dataclass_fields__.keys()
-    elif hasattr(params, '_fields'):
-        field_names = params._fields
-    else:
-        raise TypeError(f"Cannot get fields from {type(params)}")
-    
-    transformed_values = {}
+
+    # Get field names
+    field_names = _get_field_names(params)
+
+    # Transform only base parameters (not derived ones)
+    base_values = {}
     for name in field_names:
+        if name in _DERIVED_PARAMS:
+            continue  # Skip derived parameters
         value = getattr(params, name)
         if name in PARAM_BOUNDS:
             low, high = PARAM_BOUNDS[name]
-            transformed_values[name] = sigmoid_transform(value, low, high)
+            base_values[name] = sigmoid_transform(value, low, high)
         else:
-            transformed_values[name] = value
-    
-    return params.__class__(**transformed_values)
+            base_values[name] = value
+
+    # Reconstruct with recomputed derived parameters
+    return _reconstruct_parameters(params, base_values)
 
 
 def clip_to_bounds(params: Parameters) -> Parameters:
     """Clip parameters to their valid bounds.
-    
+
     Args:
         params: Parameters potentially outside bounds
-        
+
     Returns:
         Parameters clipped to valid bounds
     """
     from jfuse.coupled import CoupledParams
-    
+
     # Handle CoupledParams specially
     if isinstance(params, CoupledParams):
         clipped_fuse = clip_to_bounds(params.fuse_params)
@@ -229,25 +292,24 @@ def clip_to_bounds(params: Parameters) -> Parameters:
             depth_coef=params.depth_coef,
             depth_exp=params.depth_exp,
         )
-    
-    # Get field names - works for both dataclass and NamedTuple
-    if hasattr(params, '__dataclass_fields__'):
-        field_names = params.__dataclass_fields__.keys()
-    elif hasattr(params, '_fields'):
-        field_names = params._fields
-    else:
-        raise TypeError(f"Cannot get fields from {type(params)}")
-    
-    clipped_values = {}
+
+    # Get field names
+    field_names = _get_field_names(params)
+
+    # Clip only base parameters (not derived ones)
+    base_values = {}
     for name in field_names:
+        if name in _DERIVED_PARAMS:
+            continue  # Skip derived parameters
         value = getattr(params, name)
         if name in PARAM_BOUNDS:
             low, high = PARAM_BOUNDS[name]
-            clipped_values[name] = jnp.clip(value, low, high)
+            base_values[name] = jnp.clip(value, low, high)
         else:
-            clipped_values[name] = value
-    
-    return params.__class__(**clipped_values)
+            base_values[name] = value
+
+    # Reconstruct with recomputed derived parameters
+    return _reconstruct_parameters(params, base_values)
 
 
 def compute_grad_norm(grads: Parameters) -> float:

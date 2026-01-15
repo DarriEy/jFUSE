@@ -19,9 +19,11 @@ Example:
     >>> loss, grads = jfuse.value_and_grad_loss(model, params, observed)
 """
 
-# Enable 64-bit precision for JAX - must be done before importing JAX modules
+# JAX precision configuration
+# IMPORTANT: Keep x64 disabled for compatibility with neuralgcm coupling
+# neuralgcm requires float32 for pretrained checkpoints to work correctly
 import jax
-jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", False)
 
 __version__ = "0.1.0"
 __author__ = "Darri Eythorsson"
@@ -78,6 +80,11 @@ from jfuse.coupled import (
     coupled_simulate,
     coupled_loss,
     value_and_grad_loss,
+    nse_loss,
+    kge_loss,
+    mse_loss,
+    rmse_loss,
+    mae_loss,
 )
 
 # I/O utilities
@@ -159,10 +166,12 @@ __all__ = [
     # Optimization
     "Calibrator",
     "CalibrationConfig",
+    # Loss functions
     "nse_loss",
     "kge_loss",
-    "log_nse_loss",
-    "combined_loss",
+    "mse_loss",
+    "rmse_loss",
+    "mae_loss",
     # Quick setup
     "quick_setup",
 ]

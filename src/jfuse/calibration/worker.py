@@ -511,9 +511,7 @@ class JFUSEWorker(InMemoryModelWorker):
             gru_ids = np.asarray(gru_ids, dtype=int)
             hru_ids = np.asarray(hru_ids, dtype=int)
             gru2col = {int(g): k for k, g in enumerate(gru_ids)}
-            reach_hru_col = np.array(
-                [gru2col.get(int(h), -1) for h in hru_ids], dtype=np.int32
-            )
+            reach_hru_col = np.array([gru2col.get(int(h), -1) for h in hru_ids], dtype=np.int32)
             matched = int((reach_hru_col >= 0).sum())
             # If the network happens to already be in forcing order (identity
             # mapping), the fix is a no-op; still pass it for correctness.
@@ -525,9 +523,7 @@ class JFUSEWorker(InMemoryModelWorker):
                 return None
             return jnp.asarray(reach_hru_col)
         except (ValueError, TypeError, KeyError) as e:  # noqa: BLE001 handled
-            self.logger.warning(
-                f"Could not build reach_hru_col ({e}); using positional routing."
-            )
+            self.logger.warning(f"Could not build reach_hru_col ({e}); using positional routing.")
             return None
 
     def _initialize_model(self) -> bool:

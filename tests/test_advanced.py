@@ -568,13 +568,19 @@ class TestCoupledModel:
         # so reach position 0 drains GRU id 1 and position 1 drains GRU id 0
         # (reach order != forcing/GRU order).
         network = create_network_from_topology(
-            reach_ids=[1, 0], downstream_ids=[-1, -1],
-            lengths=[1000.0, 1000.0], slopes=[0.01, 0.01], hru_ids=[1, 0],
+            reach_ids=[1, 0],
+            downstream_ids=[-1, -1],
+            lengths=[1000.0, 1000.0],
+            slopes=[0.01, 0.01],
+            hru_ids=[1, 0],
         ).to_arrays()
         reach_hru_col = jnp.array([1, 0], dtype=jnp.int32)  # col of GRU reach drains
         model = CoupledModel(
-            fuse_config=PRMS_CONFIG, network=network,
-            hru_areas=jnp.ones(2) * 1e6, n_hrus=2, reach_hru_col=reach_hru_col,
+            fuse_config=PRMS_CONFIG,
+            network=network,
+            hru_areas=jnp.ones(2) * 1e6,
+            n_hrus=2,
+            reach_hru_col=reach_hru_col,
         )
         # Wet HRU 0, dry HRU 1.
         n = 30

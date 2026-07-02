@@ -172,6 +172,42 @@ def runoff_to_inflow(
     return runoff_mm * areas_m2 / 1000.0 / dt_seconds
 
 
+def _lateral_to_reach_order(
+    lateral_inflow: Array,
+    n_reaches: int,
+    reach_hru_col: Optional[Array] = None,
+) -> Array:
+    """Map per-HRU lateral inflow ``[T, n_hrus]`` (in forcing/HRU-column order) to
+    per-reach lateral inflow ``[T, n_reaches]`` (in the network's reach order).
+
+    The router indexes ``lateral_inflow[reach_position]`` positionally, so the
+    inflow columns MUST be in the network's reach order. When forcing columns are
+    ordered by GRU id but reaches are ordered topologically (the usual mizuRoute
+    case), feeding forcing positionally routes each HRU's runoff to the WRONG
+    reach. Passing ``reach_hru_col`` (length ``n_reaches``: the forcing column
+    that feeds each reach, ``-1`` for reaches with no HRU) gathers correctly.
+
+    When ``reach_hru_col`` is None, falls back to the legacy positional behaviour
+    (pad with zeros / fold excess) so existing single-HRU and pre-aligned setups
+    are unchanged.
+    """
+    if reach_hru_col is not None:
+        safe = jnp.maximum(reach_hru_col, 0)
+        gathered = lateral_inflow[:, safe]  # [T, n_reaches]
+        return jnp.where(reach_hru_col[None, :] >= 0, gathered, 0.0)
+
+    n_hrus = lateral_inflow.shape[1]
+    if n_hrus < n_reaches:
+        return jnp.pad(
+            lateral_inflow, ((0, 0), (0, n_reaches - n_hrus)), mode="constant", constant_values=0.0
+        )
+    if n_hrus > n_reaches:
+        base_inflow = lateral_inflow[:, : n_reaches - 1]
+        excess_inflow = jnp.sum(lateral_inflow[:, n_reaches - 1 :], axis=1, keepdims=True)
+        return jnp.concatenate([base_inflow, excess_inflow], axis=1)
+    return lateral_inflow
+
+
 def coupled_simulate(
     forcing_series: Tuple[Array, Array, Array],
     fuse_params: FUSEParameters,
@@ -188,6 +224,7 @@ def coupled_simulate(
     glacier_frac: Optional[Array] = None,
     glacier_dtemp: Optional[Array] = None,
     elev_anom: Optional[Array] = None,
+    reach_hru_col: Optional[Array] = None,
 ) -> Tuple[Array, Array, FUSEState]:
     """Run coupled FUSE + routing simulation.
 
@@ -251,33 +288,20 @@ def coupled_simulate(
         elev_anom=elev_anom,
     )
 
-    # Convert runoff to lateral inflow (m³/s)
-    # Assume HRU i maps to reach i (can be customized via hru_to_reach mapping)
+    # Convert runoff to lateral inflow (m³/s), then map HRU columns to reach
+    # order. With reach_hru_col this gathers each reach's own HRU runoff; without
+    # it, warn and fall back to the legacy positional pad/fold.
     lateral_inflow = runoff_to_inflow(runoff, hru_areas, fuse_dt * 86400.0)
 
-    # Handle HRU-to-reach dimension mismatch
-    if n_hrus != n_reaches:
+    if reach_hru_col is None and n_hrus != n_reaches:
         warnings.warn(
             f"HRU count ({n_hrus}) does not match reach count ({n_reaches}). "
-            f"Using automatic mapping: {'padding with zeros' if n_hrus < n_reaches else 'aggregating to last reach'}. "
-            f"For explicit control, provide hru_to_reach mapping.",
+            f"Using automatic positional mapping: {'padding with zeros' if n_hrus < n_reaches else 'aggregating to last reach'}. "
+            f"For correct HRU->reach alignment, provide reach_hru_col.",
             UserWarning,
         )
 
-    if n_hrus < n_reaches:
-        # Pad with zeros for reaches without HRU inflow
-        lateral_inflow = jnp.pad(
-            lateral_inflow,
-            ((0, 0), (0, n_reaches - n_hrus)),
-            mode="constant",
-            constant_values=0.0,
-        )
-    elif n_hrus > n_reaches:
-        # Aggregate excess HRUs to last reach to preserve water balance
-        # This maintains total water volume while fitting to network structure
-        base_inflow = lateral_inflow[:, : n_reaches - 1]
-        excess_inflow = jnp.sum(lateral_inflow[:, n_reaches - 1 :], axis=1, keepdims=True)
-        lateral_inflow = jnp.concatenate([base_inflow, excess_inflow], axis=1)
+    lateral_inflow = _lateral_to_reach_order(lateral_inflow, n_reaches, reach_hru_col)
 
     # Update network with current manning_n
     # Create updated network arrays with calibrated Manning's n
@@ -309,6 +333,7 @@ def coupled_simulate_full(
     glacier_frac: Optional[Array] = None,
     glacier_dtemp: Optional[Array] = None,
     elev_anom: Optional[Array] = None,
+    reach_hru_col: Optional[Array] = None,
 ) -> Tuple[Array, Array, FUSEState]:
     """Coupled FUSE + routing simulation that also returns per-reach discharge.
 
@@ -342,14 +367,7 @@ def coupled_simulate_full(
     )
 
     lateral_inflow = runoff_to_inflow(runoff, hru_areas, fuse_dt * 86400.0)
-    if n_hrus < n_reaches:
-        lateral_inflow = jnp.pad(
-            lateral_inflow, ((0, 0), (0, n_reaches - n_hrus)), mode="constant", constant_values=0.0
-        )
-    elif n_hrus > n_reaches:
-        base_inflow = lateral_inflow[:, : n_reaches - 1]
-        excess_inflow = jnp.sum(lateral_inflow[:, n_reaches - 1 :], axis=1, keepdims=True)
-        lateral_inflow = jnp.concatenate([base_inflow, excess_inflow], axis=1)
+    lateral_inflow = _lateral_to_reach_order(lateral_inflow, n_reaches, reach_hru_col)
 
     updated_network = network._replace(manning_n=manning_n)
     from .routing import route_network_full
@@ -421,6 +439,7 @@ class CoupledModel(eqx.Module):
     glacier_frac: Optional[Array]
     glacier_dtemp: Optional[Array]
     elev_anom: Optional[Array]
+    reach_hru_col: Optional[Array]
     routing_dt: Optional[float] = eqx.field(static=True)
     n_substeps: int = eqx.field(static=True)
 
@@ -436,6 +455,7 @@ class CoupledModel(eqx.Module):
         glacier_frac: Optional[Array] = None,
         glacier_dtemp: Optional[Array] = None,
         elev_anom: Optional[Array] = None,
+        reach_hru_col: Optional[Array] = None,
     ):
         """Initialize coupled model.
 
@@ -471,6 +491,11 @@ class CoupledModel(eqx.Module):
         # Per-HRU elevation anomaly (100m units, vs domain reference) for the
         # orographic precip gradient (opg); None => no orographic correction.
         self.elev_anom = elev_anom
+        # Per-reach forcing-column index [n_reaches]: the HRU/forcing column whose
+        # runoff feeds each reach (-1 = no HRU). Corrects HRU->reach alignment when
+        # forcing columns and reaches use different orderings (GRU-id vs topological).
+        # None => legacy positional mapping (correct only when already aligned).
+        self.reach_hru_col = reach_hru_col
         self.routing_dt = routing_dt
         # Resolve a static sub-step count from the (concrete) network geometry.
         self.n_substeps = _resolve_n_substeps(
@@ -577,6 +602,7 @@ class CoupledModel(eqx.Module):
             glacier_frac=self.glacier_frac,
             glacier_dtemp=self.glacier_dtemp,
             elev_anom=self.elev_anom,
+            reach_hru_col=self.reach_hru_col,
         )
 
         return outlet_Q, runoff
@@ -622,6 +648,7 @@ class CoupledModel(eqx.Module):
             glacier_frac=self.glacier_frac,
             glacier_dtemp=self.glacier_dtemp,
             elev_anom=self.elev_anom,
+            reach_hru_col=self.reach_hru_col,
         )
         return outlet_Q, Q_all, final_state
 

@@ -493,6 +493,43 @@ class JFUSEWorker(InMemoryModelWorker):
     # Model Initialization
     # =========================================================================
 
+    def _build_reach_hru_col(self, network_arrays: Any) -> Optional[Any]:
+        """Map each reach to the forcing column of the GRU it drains.
+
+        Forcing columns are ordered by GRU id (``self._gru_ids``) while reaches
+        are ordered topologically (``network.hru_ids`` gives the GRU each reach
+        drains). Positional routing therefore misaligns runoff to reaches. Return
+        ``reach_hru_col[i]`` = forcing column of GRU ``hru_ids[i]`` (``-1`` if that
+        GRU has no forcing column). Returns ``None`` when the mapping cannot be
+        built (e.g. no gru ids / hru ids), preserving legacy positional behaviour.
+        """
+        gru_ids = getattr(self, "_gru_ids", None)
+        hru_ids = getattr(network_arrays, "hru_ids", None)
+        if gru_ids is None or hru_ids is None:
+            return None
+        try:
+            gru_ids = np.asarray(gru_ids, dtype=int)
+            hru_ids = np.asarray(hru_ids, dtype=int)
+            gru2col = {int(g): k for k, g in enumerate(gru_ids)}
+            reach_hru_col = np.array(
+                [gru2col.get(int(h), -1) for h in hru_ids], dtype=np.int32
+            )
+            matched = int((reach_hru_col >= 0).sum())
+            # If the network happens to already be in forcing order (identity
+            # mapping), the fix is a no-op; still pass it for correctness.
+            self.logger.info(
+                f"Built reach->HRU forcing alignment: {matched}/{len(hru_ids)} "
+                f"reaches matched to a forcing column."
+            )
+            if matched == 0:
+                return None
+            return jnp.asarray(reach_hru_col)
+        except (ValueError, TypeError, KeyError) as e:  # noqa: BLE001 handled
+            self.logger.warning(
+                f"Could not build reach_hru_col ({e}); using positional routing."
+            )
+            return None
+
     def _initialize_model(self) -> bool:
         """Initialize jFUSE model components."""
         if not HAS_JFUSE:
@@ -671,6 +708,13 @@ class JFUSEWorker(InMemoryModelWorker):
         # Store network arrays for multi-gauge reach ID mapping
         self._network_arrays = network_arrays
 
+        # Build reach->forcing-column alignment (reach_hru_col): forcing columns
+        # are ordered by GRU id while reaches are ordered topologically, so
+        # positional routing would send each HRU's runoff to the wrong reach.
+        # reach_hru_col[i] = the forcing column of the GRU that reach i drains
+        # (network.hru_ids[i]); -1 for reaches with no matching HRU.
+        reach_hru_col = self._build_reach_hru_col(network_arrays)
+
         # Create CoupledModel
         self._coupled_model = CoupledModel(
             fuse_config=fuse_config,
@@ -682,6 +726,7 @@ class JFUSEWorker(InMemoryModelWorker):
             glacier_frac=glacier_frac,
             glacier_dtemp=self._glacier_dtemp,
             elev_anom=self._elev_anom,
+            reach_hru_col=reach_hru_col,
         )
         self._model = self._coupled_model.fuse_model
         self._default_params = self._coupled_model.default_params()
@@ -928,6 +973,10 @@ class JFUSEWorker(InMemoryModelWorker):
                 self.logger.info(
                     f"Using first {n_non_coastal} GRUs as non-coastal (no mapping file)"
                 )
+
+        # Store the per-forcing-column GRU ids so the coupled model can align
+        # each reach to the forcing column of the GRU it drains (reach_hru_col).
+        self._gru_ids = gru_ids
 
         # Store time index
         if "time" in ds.coords:

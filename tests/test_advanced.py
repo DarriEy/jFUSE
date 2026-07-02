@@ -531,6 +531,61 @@ class TestCoupledModel:
         assert jnp.all(jnp.isfinite(outlet_Q))
         assert jnp.all(outlet_Q >= 0)
 
+    def test_lateral_to_reach_order_gather(self):
+        """reach_hru_col must gather HRU inflow into reach order (regression).
+
+        Forcing columns are ordered by GRU id but reaches are ordered
+        topologically; feeding inflow positionally misroutes each HRU's runoff.
+        _lateral_to_reach_order with reach_hru_col fixes the alignment.
+        """
+        from jfuse.coupled import _lateral_to_reach_order
+
+        # 3 HRUs (forcing cols 0,1,2), 3 reaches whose own GRU is the REVERSE:
+        # reach 0 drains GRU 2, reach 1 drains GRU 1, reach 2 drains GRU 0.
+        lateral = jnp.array([[10.0, 20.0, 30.0]])  # [T=1, n_hrus=3], col j = GRU j
+        reach_hru_col = jnp.array([2, 1, 0], dtype=jnp.int32)  # forcing col per reach
+        out = _lateral_to_reach_order(lateral, 3, reach_hru_col)
+        # reach 0 <- col 2 (30), reach 1 <- col 1 (20), reach 2 <- col 0 (10)
+        assert jnp.allclose(out[0], jnp.array([30.0, 20.0, 10.0]))
+
+        # -1 entries (reach with no HRU) get zero inflow
+        out2 = _lateral_to_reach_order(lateral, 4, jnp.array([0, 1, 2, -1], dtype=jnp.int32))
+        assert out2.shape == (1, 4)
+        assert jnp.allclose(out2[0], jnp.array([10.0, 20.0, 30.0, 0.0]))
+
+        # None => legacy positional behaviour (pad when n_hrus < n_reaches)
+        out3 = _lateral_to_reach_order(lateral, 5, None)
+        assert out3.shape == (1, 5)
+        assert jnp.allclose(out3[0], jnp.array([10.0, 20.0, 30.0, 0.0, 0.0]))
+
+    def test_coupled_reach_hru_col_routes_correctly(self):
+        """A distinctive HRU's runoff must reach its own reach's outlet when
+        reach_hru_col aligns forcing (GRU order) to reaches (topological order)."""
+        from jfuse import CoupledModel, PRMS_CONFIG
+        from jfuse.routing import create_network_from_topology
+
+        # Two independent headwater reaches (each its own outlet). Network built
+        # so reach position 0 drains GRU id 1 and position 1 drains GRU id 0
+        # (reach order != forcing/GRU order).
+        network = create_network_from_topology(
+            reach_ids=[1, 0], downstream_ids=[-1, -1],
+            lengths=[1000.0, 1000.0], slopes=[0.01, 0.01], hru_ids=[1, 0],
+        ).to_arrays()
+        reach_hru_col = jnp.array([1, 0], dtype=jnp.int32)  # col of GRU reach drains
+        model = CoupledModel(
+            fuse_config=PRMS_CONFIG, network=network,
+            hru_areas=jnp.ones(2) * 1e6, n_hrus=2, reach_hru_col=reach_hru_col,
+        )
+        # Wet HRU 0, dry HRU 1.
+        n = 30
+        precip = jnp.stack([jnp.ones(n) * 30.0, jnp.zeros(n)], axis=1)
+        pet = jnp.ones((n, 2)) * 1.0
+        temp = jnp.ones((n, 2)) * 12.0
+        _, Q_all, _ = model.simulate_full((precip, pet, temp), model.default_params())
+        # HRU 0 (wet) drains reach POSITION 1 (hru_ids[1]=0); reach position 0 is dry.
+        assert Q_all[-1, 1] > Q_all[-1, 0]
+        assert jnp.all(jnp.isfinite(Q_all))
+
     def test_routing_substeps_conserve_and_resolve(self):
         """Sub-stepping stays finite/mass-conserving and resolves sane counts."""
         from jfuse import CoupledModel, PRMS_CONFIG

@@ -211,3 +211,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Iceland regionalization experiment caches (large .npz/.nc)
+experiments/iceland_regionalization/cache/

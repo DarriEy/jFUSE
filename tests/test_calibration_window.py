@@ -17,7 +17,7 @@ import pytest
 
 jnp = pytest.importorskip("jax.numpy")
 
-from jfuse.calibration.worker import multi_gauge_kge_loss  # noqa: E402
+from jfuse.calibration.worker import multi_gauge_kge_loss
 
 WARMUP = 50
 N = 400
@@ -62,9 +62,7 @@ def test_full_span_slice_is_a_noop():
     Q_all, gauge_obs = _series()
     unsliced = float(multi_gauge_kge_loss(Q_all, list(range(G)), gauge_obs, WARMUP))
     full = float(
-        multi_gauge_kge_loss(
-            Q_all, list(range(G)), gauge_obs, WARMUP, cal_slice=(0, N - WARMUP)
-        )
+        multi_gauge_kge_loss(Q_all, list(range(G)), gauge_obs, WARMUP, cal_slice=(0, N - WARMUP))
     )
     assert full == pytest.approx(unsliced, abs=1e-9)
 
@@ -80,9 +78,7 @@ def test_narrower_slice_is_applied():
     obs_j = jnp.array(obs)
 
     front = float(
-        multi_gauge_kge_loss(
-            Q_all, list(range(G)), obs_j, WARMUP, cal_slice=(0, span // 2)
-        )
+        multi_gauge_kge_loss(Q_all, list(range(G)), obs_j, WARMUP, cal_slice=(0, span // 2))
     )
     whole = float(multi_gauge_kge_loss(Q_all, list(range(G)), obs_j, WARMUP))
 

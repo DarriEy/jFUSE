@@ -28,7 +28,7 @@ jax.config.update("jax_enable_x64", False)
 
 from typing import Optional
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 __author__ = "Darri Eythorsson"
 
 # Core types and configuration

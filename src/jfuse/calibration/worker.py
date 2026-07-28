@@ -155,6 +155,52 @@ except ImportError:
     build_config_from_decisions = None  # type: ignore[assignment]
 
 
+def _calibration_slice(worker):
+    """Calibration-period slice, tolerating symfluence releases without it.
+
+    ``InMemoryModelWorker.get_calibration_slice()`` is the shared
+    implementation and is used whenever it is available. Releases at or
+    below symfluence 0.9.2 predate it, and this package must not quietly
+    fall back to scoring the whole post-warmup record there — losing the
+    calibration window is exactly the bug this guards against.
+
+    Args:
+        worker: The in-memory worker whose config and time index to read.
+
+    Returns:
+        ``(start, end)`` within the post-warmup arrays, or None when no
+        calibration period is configured or it does not overlap the record.
+    """
+    shared = getattr(worker, "get_calibration_slice", None)
+    if callable(shared):
+        return shared()
+
+    cal_period = worker._cfg("CALIBRATION_PERIOD", worker._cfg("EXPERIMENT_CALIBRATION_PERIOD", ""))
+    if not cal_period or getattr(worker, "_time_index", None) is None:
+        return None
+    try:
+        dates = [d.strip() for d in str(cal_period).split(",")]
+        if len(dates) < 2:
+            return None
+        start_date = pd.Timestamp(dates[0])
+        end_date = pd.Timestamp(dates[1])
+
+        steps_fn = getattr(worker, "warmup_steps", None)
+        steps = steps_fn() if callable(steps_fn) else worker.warmup_days
+
+        after_warmup = worker._time_index[steps:]
+        if not isinstance(after_warmup, pd.DatetimeIndex):
+            after_warmup = pd.DatetimeIndex(after_warmup)
+
+        mask = (after_warmup >= start_date) & (after_warmup <= end_date)
+        hits = np.where(mask)[0]
+        if len(hits) == 0:
+            return None
+        return int(hits[0]), int(hits[-1] + 1)
+    except (ValueError, TypeError):
+        return None
+
+
 class JFUSEWorker(InMemoryModelWorker):
     """Worker for jFUSE model evaluation with native gradient support.
 
@@ -1519,7 +1565,7 @@ class JFUSEWorker(InMemoryModelWorker):
         has_multi_gauge = self._gauge_obs is not None and self._gauge_reach_indices is not None
         gauge_obs = self._gauge_obs
         gauge_indices = self._gauge_reach_indices
-        cal_slice = self.get_calibration_slice()
+        cal_slice = _calibration_slice(self)
         aggregation = self._cfg("MULTI_GAUGE_AGGREGATION", "median")
         kge_floor = self._cfg("MULTI_GAUGE_KGE_FLOOR", None)
         if kge_floor is not None:
@@ -1676,7 +1722,7 @@ class JFUSEWorker(InMemoryModelWorker):
                         self.warmup_days,
                         aggregation,
                         kge_floor,
-                        self.get_calibration_slice(),
+                        _calibration_slice(self),
                     )
                 )
                 # Return 1 - loss (KGE value, higher is better)
@@ -1702,7 +1748,7 @@ class JFUSEWorker(InMemoryModelWorker):
             obs = np.array(self._observations) if HAS_JAX else self._observations
             obs = obs[self.warmup_days :]
 
-            cal_slice = self.get_calibration_slice()
+            cal_slice = _calibration_slice(self)
             if cal_slice is not None:
                 start, end = cal_slice
                 sim = sim[start:end]

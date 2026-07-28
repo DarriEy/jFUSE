@@ -53,7 +53,12 @@ dev = [
     "black>=23.0",
     "isort>=5.12",
     "mypy>=1.0",
-    "ruff>=0.1.0",
+    # Upper-bounded deliberately: the lint job is blocking, so an unpinned
+    # linter turns any upstream rule change into a red build on untouched
+    # code. ruff 0.16 enabled rules (notably I001) that this tree predates,
+    # taking CI from green to 510 errors with no commit in between. Raise the
+    # bound in its own PR, together with the reformat it requires.
+    "ruff>=0.1.0,<0.16",
 ]
 viz = [
     "matplotlib>=3.7.0",

@@ -85,7 +85,13 @@ try:
         return 1.0 - nse
 
     def multi_gauge_kge_loss(
-        Q_all, gauge_indices, gauge_obs, warmup, aggregation="median", kge_floor=None
+        Q_all,
+        gauge_indices,
+        gauge_obs,
+        warmup,
+        aggregation="median",
+        kge_floor=None,
+        cal_slice=None,
     ):
         """Multi-gauge KGE loss aggregated across gauges.
 
@@ -95,6 +101,9 @@ try:
             gauge_obs: Observed discharge per gauge (time x gauges)
             warmup: Number of warmup timesteps to skip
             aggregation: 'median' or 'mean' for aggregating per-gauge losses
+            cal_slice: (start, end) within the post-warmup arrays restricting
+                the loss to the calibration period. Without it the loss also
+                scores the held-out evaluation period.
             kge_floor: If set, cap each gauge's KGE contribution at this value
                 (i.e. clip per-gauge loss to ``1 - kge_floor``). Lets a 'mean'
                 aggregation count every gauge without a handful of pathological
@@ -104,6 +113,10 @@ try:
         for i, seg_idx in enumerate(gauge_indices):
             sim_g = Q_all[warmup:, seg_idx]
             obs_g = gauge_obs[warmup:, i] if gauge_obs.ndim > 1 else gauge_obs[warmup:]
+            if cal_slice is not None:
+                _start, _end = cal_slice
+                sim_g = sim_g[_start:_end]
+                obs_g = obs_g[_start:_end]
             valid = ~jnp.isnan(obs_g)
             if jnp.sum(valid) < 10:
                 continue
@@ -1506,6 +1519,7 @@ class JFUSEWorker(InMemoryModelWorker):
         has_multi_gauge = self._gauge_obs is not None and self._gauge_reach_indices is not None
         gauge_obs = self._gauge_obs
         gauge_indices = self._gauge_reach_indices
+        cal_slice = self.get_calibration_slice()
         aggregation = self._cfg("MULTI_GAUGE_AGGREGATION", "median")
         kge_floor = self._cfg("MULTI_GAUGE_KGE_FLOOR", None)
         if kge_floor is not None:
@@ -1524,7 +1538,7 @@ class JFUSEWorker(InMemoryModelWorker):
                 # Multi-gauge path: simulate_full -> multi_gauge_kge_loss
                 _, Q_all, _ = coupled_model.simulate_full(forcing_tuple, params_obj)
                 return multi_gauge_kge_loss(
-                    Q_all, gauge_indices, obs, warmup, aggregation, kge_floor
+                    Q_all, gauge_indices, obs, warmup, aggregation, kge_floor, cal_slice
                 )
             elif is_distributed:
                 # Single outlet path
@@ -1543,10 +1557,19 @@ class JFUSEWorker(InMemoryModelWorker):
                 sim_eval = runoff[warmup:]
 
             assert obs is not None, "Observations required for single-gauge loss"
-            obs_aligned = obs[: len(sim_eval)]
+            # Observations are stored full-length, so they must be advanced past
+            # warmup to line up with sim_eval. Truncating obs from index 0
+            # instead compared simulated day t+warmup against observed day t.
+            obs_eval = obs[warmup:]
+            if cal_slice is not None:
+                start, end = cal_slice
+                sim_eval = sim_eval[start:end]
+                obs_eval = obs_eval[start:end]
+            n = min(len(sim_eval), len(obs_eval))
+            sim_eval, obs_eval = sim_eval[:n], obs_eval[:n]
             if metric.lower() == "nse":
-                return nse_loss(sim_eval[: len(obs_aligned)], obs_aligned)
-            return kge_loss(sim_eval[: len(obs_aligned)], obs_aligned)
+                return nse_loss(sim_eval, obs_eval)
+            return kge_loss(sim_eval, obs_eval)
 
         return loss_from_array
 
@@ -1653,6 +1676,7 @@ class JFUSEWorker(InMemoryModelWorker):
                         self.warmup_days,
                         aggregation,
                         kge_floor,
+                        self.get_calibration_slice(),
                     )
                 )
                 # Return 1 - loss (KGE value, higher is better)
@@ -1670,11 +1694,19 @@ class JFUSEWorker(InMemoryModelWorker):
                 )
                 sim = np.array(runoff) if HAS_JAX else runoff
 
-            sim = sim[self.warmup_days :]
-            obs = np.array(self._observations) if HAS_JAX else self._observations
-
-            if obs is None:
+            if self._observations is None:
                 return float(self.penalty_score)
+
+            sim = sim[self.warmup_days :]
+            # Advance observations past warmup too; they are stored full-length.
+            obs = np.array(self._observations) if HAS_JAX else self._observations
+            obs = obs[self.warmup_days :]
+
+            cal_slice = self.get_calibration_slice()
+            if cal_slice is not None:
+                start, end = cal_slice
+                sim = sim[start:end]
+                obs = obs[start:end]
 
             min_len = min(len(sim), len(obs))
             sim = sim[:min_len]

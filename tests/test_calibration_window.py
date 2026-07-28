@@ -17,7 +17,10 @@ import pytest
 
 jnp = pytest.importorskip("jax.numpy")
 
-from jfuse.calibration.worker import multi_gauge_kge_loss
+# Imported after the skip guard above, since the symbol only exists when the
+# JAX stack is present. E402 is enabled under the pinned ruff (<0.16) and not
+# under 0.16 — keep the directive while the pin stands.
+from jfuse.calibration.worker import multi_gauge_kge_loss  # noqa: E402
 
 WARMUP = 50
 N = 400
